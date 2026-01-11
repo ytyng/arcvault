@@ -2,9 +2,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { Store } from "@tauri-apps/plugin-store";
+  import { save } from "@tauri-apps/plugin-dialog";
   import { onMount, onDestroy } from "svelte";
 
-  type OutputLocation = "source" | "downloads" | "desktop";
+  type OutputLocation = "source" | "downloads" | "desktop" | "custom";
 
   let files = $state<string[]>([]);
   let isDragging = $state(false);
@@ -14,12 +15,14 @@
 
   let outputLocation = $state<OutputLocation>("source");
   let includeParent = $state(true);
+  let archiveName = $state("");
+  let customOutputPath = $state<string | null>(null);
+  let displayOutputPath = $state<string>("");
 
   let store: Store | null = null;
   let unlisten: (() => void) | null = null;
 
   onMount(async () => {
-    // Store を初期化
     store = await Store.load("settings.json", {
       defaults: {
         outputLocation: "source",
@@ -31,12 +34,11 @@
     const savedLocation = await store.get<OutputLocation>("outputLocation");
     const savedIncludeParent = await store.get<boolean>("includeParent");
 
-    if (savedLocation) outputLocation = savedLocation;
+    if (savedLocation && savedLocation !== "custom") outputLocation = savedLocation;
     if (savedIncludeParent !== null && savedIncludeParent !== undefined) {
       includeParent = savedIncludeParent;
     }
 
-    // Tauri のドラッグ&ドロップイベントをリッスン
     unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
       if (event.payload.type === "over") {
         isDragging = true;
@@ -55,11 +57,16 @@
 
   async function saveSettings() {
     if (!store) return;
-    await store.set("outputLocation", outputLocation);
+    if (outputLocation !== "custom") {
+      await store.set("outputLocation", outputLocation);
+    }
     await store.set("includeParent", includeParent);
   }
 
   async function getOutputDir(sourcePath: string): Promise<string> {
+    if (outputLocation === "custom" && customOutputPath) {
+      return customOutputPath;
+    }
     switch (outputLocation) {
       case "downloads":
         return (await invoke<string | null>("get_downloads_dir")) || sourcePath;
@@ -73,20 +80,34 @@
     }
   }
 
+  async function updateDisplayOutputPath() {
+    if (files.length > 0) {
+      displayOutputPath = await getOutputDir(files[0]);
+    } else {
+      displayOutputPath = "";
+    }
+  }
+
   async function handleFileDrop(paths: string[]) {
     if (paths.length === 0) return;
 
-    // 単一アイテムの場合
+    // 単一フォルダの場合は即座に圧縮
     if (paths.length === 1) {
       const path = paths[0];
-      // パスの末尾が / でないかつ拡張子がなければフォルダの可能性が高い
-      // Rust 側でフォルダかどうかを判定するので、とりあえず zip_folder を試す
       const result = await tryZipFolder(path);
       if (result) return;
     }
 
-    // 複数アイテムまたは単一ファイルの場合はリストに追加
-    files = [...files, ...paths.filter((p) => !files.includes(p))];
+    // ファイルまたは複数アイテムの場合はリストに追加
+    const newFiles = paths.filter((p) => !files.includes(p));
+    if (newFiles.length > 0) {
+      files = [...files, ...newFiles];
+      // アーカイブ名が未設定なら最初のファイル名をデフォルトに
+      if (!archiveName && files.length > 0) {
+        archiveName = getFileName(files[0]);
+      }
+      await updateDisplayOutputPath();
+    }
   }
 
   async function tryZipFolder(folderPath: string): Promise<boolean> {
@@ -111,13 +132,32 @@
       message = `作成完了: ${result.output_path}`;
       messageType = "success";
       return true;
-    } else if (result.error?.includes("フォルダが存在しません")) {
-      // フォルダではなかったので false を返す
+    } else if (result.error?.includes("フォルダではありません")) {
+      // ファイルだった場合はリストに追加するため false を返す
       return false;
     } else {
       message = `エラー: ${result.error}`;
       messageType = "error";
       return true;
+    }
+  }
+
+  async function selectSaveLocation() {
+    const result = await save({
+      defaultPath: archiveName ? `${archiveName}.zip` : "archive.zip",
+      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+    });
+
+    if (result) {
+      // フルパスから親ディレクトリとファイル名を分離
+      const pathParts = result.split("/");
+      const fileName = pathParts.pop() || "archive.zip";
+      customOutputPath = pathParts.join("/");
+      outputLocation = "custom";
+      displayOutputPath = customOutputPath;
+
+      // .zip 拡張子を除去してアーカイブ名に設定
+      archiveName = fileName.replace(/\.zip$/i, "");
     }
   }
 
@@ -128,7 +168,7 @@
     message = "";
 
     const outputDir = await getOutputDir(files[0]);
-    const archiveName = `archive_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+    const finalArchiveName = archiveName || "archive";
 
     const result = await invoke<{
       success: boolean;
@@ -137,7 +177,7 @@
     }>("zip_files", {
       filePaths: files,
       outputDir,
-      archiveName,
+      archiveName: finalArchiveName,
     });
 
     isProcessing = false;
@@ -145,7 +185,7 @@
     if (result.success) {
       message = `作成完了: ${result.output_path}`;
       messageType = "success";
-      files = [];
+      clearFiles();
     } else {
       message = `エラー: ${result.error}`;
       messageType = "error";
@@ -154,12 +194,27 @@
 
   function removeFile(index: number) {
     files = files.filter((_, i) => i !== index);
+    // ファイルがなくなったらアーカイブ名もリセット
+    if (files.length === 0) {
+      archiveName = "";
+      displayOutputPath = "";
+      if (outputLocation === "custom") {
+        outputLocation = "source";
+        customOutputPath = null;
+      }
+    }
   }
 
   function clearFiles() {
     files = [];
+    archiveName = "";
+    displayOutputPath = "";
     message = "";
     messageType = "";
+    if (outputLocation === "custom") {
+      outputLocation = "source";
+      customOutputPath = null;
+    }
   }
 
   function getFileName(path: string): string {
@@ -167,9 +222,7 @@
   }
 </script>
 
-<main
-  class="h-screen flex flex-col"
->
+<main class="h-screen flex flex-col overflow-hidden">
   <!-- ドロップゾーン -->
   <div class="flex-1 flex flex-col items-center justify-center p-4">
     <div
@@ -187,21 +240,25 @@
         </div>
       {:else if files.length > 0}
         <!-- ファイルリスト表示 -->
-        <div class="w-full max-w-md px-4">
+        <div class="w-full max-w-xl px-4 overflow-y-auto">
           <h2 class="text-lg font-semibold mb-3 text-center">
             ファイル一覧 ({files.length}件)
           </h2>
-          <ul class="space-y-2 max-h-48 overflow-y-auto mb-4">
+          <ul class="space-y-2 max-h-36 overflow-y-auto mb-4">
             {#each files as file, index}
               <li
-                class="flex items-center justify-between bg-gray-50 dark:bg-gray-700 rounded-lg px-3 py-2"
+                class="flex items-center justify-between bg-gray-50 dark:bg-gray-700 rounded-lg px-3 py-2 gap-2"
               >
-                <span class="truncate text-sm" title={file}
-                  >{getFileName(file)}</span
+                <span
+                  class="text-xs font-mono text-gray-600 dark:text-gray-300 flex-1 overflow-hidden"
+                  style="direction: rtl; text-align: left;"
+                  title={file}
                 >
+                  <bdi>{file}</bdi>
+                </span>
                 <button
                   onclick={() => removeFile(index)}
-                  class="ml-2 text-red-500 hover:text-red-700 dark:hover:text-red-400"
+                  class="flex-shrink-0 text-red-500 hover:text-red-700 dark:hover:text-red-400"
                   aria-label="削除"
                 >
                   <svg
@@ -220,18 +277,46 @@
               </li>
             {/each}
           </ul>
-          <div class="flex gap-2 justify-center">
+
+          <!-- 保存先フォルダ（クリックで変更） -->
+          <div class="mb-2">
             <button
-              onclick={zipMultipleFiles}
-              class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+              onclick={selectSaveLocation}
+              class="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer overflow-hidden w-full text-left"
+              style="direction: rtl; text-align: left;"
+              title={displayOutputPath}
             >
-              Zipを作成
+              <bdi>{displayOutputPath}/</bdi>
             </button>
+          </div>
+
+          <!-- アーカイブ名入力 -->
+          <div class="mb-4">
+            <div class="flex gap-2">
+              <input
+                id="archive-name"
+                type="text"
+                bind:value={archiveName}
+                placeholder="archive"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <span class="flex items-center text-gray-500 dark:text-gray-400 text-sm">.zip</span>
+            </div>
+          </div>
+
+          <div class="flex gap-2 justify-between">
             <button
               onclick={clearFiles}
               class="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500 rounded-lg font-medium transition-colors"
             >
               クリア
+            </button>
+
+            <button
+              onclick={zipMultipleFiles}
+              class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+            >
+              Zipを作成
             </button>
           </div>
         </div>
@@ -278,67 +363,69 @@
   </div>
 
   <!-- 設定パネル -->
-  <div
-    class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
-  >
-    <!-- 出力先 -->
-    <div class="mb-3">
-      <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-        保存先
-      </p>
-      <div class="flex gap-4 flex-wrap">
-        <label class="flex items-center gap-2 cursor-pointer">
+  {#if files.length === 0}
+    <div
+      class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+    >
+    <!-- 出力先（ファイルリストがない時のみ表示） -->
+      <div class="mb-3">
+        <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          保存先
+        </p>
+        <div class="flex gap-4 flex-wrap">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="outputLocation"
+              value="source"
+              bind:group={outputLocation}
+              onchange={saveSettings}
+              class="text-blue-600"
+            />
+            <span class="text-sm">元の場所</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="outputLocation"
+              value="downloads"
+              bind:group={outputLocation}
+              onchange={saveSettings}
+              class="text-blue-600"
+            />
+            <span class="text-sm">ダウンロード</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="outputLocation"
+              value="desktop"
+              bind:group={outputLocation}
+              onchange={saveSettings}
+              class="text-blue-600"
+            />
+            <span class="text-sm">デスクトップ</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 親フォルダを含める（フォルダ圧縮時のみ有効なのでファイルリストがない時のみ表示） -->
+      <div class="flex items-center gap-3">
+        <label class="relative inline-flex items-center cursor-pointer">
           <input
-            type="radio"
-            name="outputLocation"
-            value="source"
-            bind:group={outputLocation}
+            type="checkbox"
+            bind:checked={includeParent}
             onchange={saveSettings}
-            class="text-blue-600"
+            class="sr-only peer"
           />
-          <span class="text-sm">元の場所</span>
-        </label>
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input
-            type="radio"
-            name="outputLocation"
-            value="downloads"
-            bind:group={outputLocation}
-            onchange={saveSettings}
-            class="text-blue-600"
-          />
-          <span class="text-sm">ダウンロード</span>
-        </label>
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input
-            type="radio"
-            name="outputLocation"
-            value="desktop"
-            bind:group={outputLocation}
-            onchange={saveSettings}
-            class="text-blue-600"
-          />
-          <span class="text-sm">デスクトップ</span>
+          <div
+            class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-blue-600"
+          ></div>
+          <span class="ml-3 text-sm text-gray-700 dark:text-gray-300"
+            >フォルダ圧縮時、元のフォルダを含めて圧縮する</span
+          >
         </label>
       </div>
     </div>
-
-    <!-- 親フォルダを含める -->
-    <div class="flex items-center gap-3">
-      <label class="relative inline-flex items-center cursor-pointer">
-        <input
-          type="checkbox"
-          bind:checked={includeParent}
-          onchange={saveSettings}
-          class="sr-only peer"
-        />
-        <div
-          class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-blue-600"
-        ></div>
-        <span class="ml-3 text-sm text-gray-700 dark:text-gray-300"
-          >フォルダ圧縮時、元のフォルダを含めて圧縮する</span
-        >
-      </label>
-    </div>
-  </div>
+  {/if}
 </main>
