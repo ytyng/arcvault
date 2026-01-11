@@ -1,0 +1,96 @@
+# ArcVault - AI Agent Development Guide
+
+## Project Overview
+
+ArcVault is a macOS desktop app for creating Windows-compatible ZIP files.
+Built with Tauri 2 + SvelteKit 5 + Tailwind 4.
+
+## Architecture
+
+```
+arcvault/
+├── src/                    # SvelteKit frontend
+│   ├── routes/+page.svelte # Main UI
+│   └── app.html            # HTML template
+├── src-tauri/              # Tauri/Rust backend
+│   ├── src/lib.rs          # Tauri command definitions
+│   ├── Cargo.toml          # Rust dependencies
+│   └── capabilities/       # Tauri permissions
+└── static/                 # Static files
+```
+
+## Important Technical Decisions
+
+### ZIP Compression Method
+
+- Uses Rust `zip` crate instead of `ditto` command
+- Reason: `ditto` does not set UTF-8 Language Encoding Flag (bit 11), causing garbled Japanese filenames on Windows
+- The `zip` crate automatically sets this flag
+
+### Tauri Commands
+
+Defined in `src-tauri/src/lib.rs`:
+
+- `zip_folder`: Compress a single folder to ZIP
+- `zip_files`: Compress multiple files/folders to ZIP
+- `get_downloads_dir`: Get Downloads folder path
+- `get_desktop_dir`: Get Desktop folder path
+- `get_parent_dir`: Get parent directory path
+
+### Excluded Files
+
+Automatically excluded from ZIP:
+- `.DS_Store`
+- `__MACOSX`
+- Files starting with `._`
+
+## Development Commands
+
+```bash
+# Development server
+pnpm tauri dev
+
+# Frontend build only
+pnpm build
+
+# Rust backend build only
+cd src-tauri && cargo build --release
+
+# Full app build
+pnpm tauri build
+
+# Icon generation
+pnpm tauri icon /path/to/icon.png
+```
+
+## Svelte 5 Runes
+
+This project uses Svelte 5. State management uses Runes:
+
+```svelte
+let files = $state<string[]>([]);
+let isDragging = $state(false);
+```
+
+## Tauri Plugins
+
+Plugins in use:
+- `tauri-plugin-store`: Settings persistence
+- `tauri-plugin-dialog`: Native save dialog
+- `tauri-plugin-opener`: Open files/URLs
+
+When adding new plugins:
+1. Add dependency to `src-tauri/Cargo.toml`
+2. Initialize plugin in `run()` at `src-tauri/src/lib.rs`
+3. Add permission to `src-tauri/capabilities/default.json`
+4. Add npm package to `package.json`
+
+## Testing
+
+Unit tests are not yet implemented.
+
+## Notes
+
+- Path separator uses `/` (macOS-only app)
+- Tauri commands are called from frontend using `invoke`
+- Settings are saved to `settings.json` via `@tauri-apps/plugin-store`

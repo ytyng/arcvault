@@ -91,18 +91,18 @@
   async function handleFileDrop(paths: string[]) {
     if (paths.length === 0) return;
 
-    // 単一フォルダの場合は即座に圧縮
+    // Single folder: compress immediately
     if (paths.length === 1) {
       const path = paths[0];
       const result = await tryZipFolder(path);
       if (result) return;
     }
 
-    // ファイルまたは複数アイテムの場合はリストに追加
+    // Files or multiple items: add to list
     const newFiles = paths.filter((p) => !files.includes(p));
     if (newFiles.length > 0) {
       files = [...files, ...newFiles];
-      // アーカイブ名が未設定なら最初のファイル名をデフォルトに
+      // Set default archive name from first file if not set
       if (!archiveName && files.length > 0) {
         archiveName = getFileName(files[0]);
       }
@@ -129,14 +129,14 @@
     isProcessing = false;
 
     if (result.success) {
-      message = `作成完了: ${result.output_path}`;
+      message = `Created: ${result.output_path}`;
       messageType = "success";
       return true;
-    } else if (result.error?.includes("フォルダではありません")) {
-      // ファイルだった場合はリストに追加するため false を返す
+    } else if (result.error?.includes("not a folder")) {
+      // Return false to add file to list instead
       return false;
     } else {
-      message = `エラー: ${result.error}`;
+      message = `Error: ${result.error}`;
       messageType = "error";
       return true;
     }
@@ -149,14 +149,14 @@
     });
 
     if (result) {
-      // フルパスから親ディレクトリとファイル名を分離
+      // Split full path into parent directory and filename
       const pathParts = result.split("/");
       const fileName = pathParts.pop() || "archive.zip";
       customOutputPath = pathParts.join("/");
       outputLocation = "custom";
       displayOutputPath = customOutputPath;
 
-      // .zip 拡張子を除去してアーカイブ名に設定
+      // Remove .zip extension and set as archive name
       archiveName = fileName.replace(/\.zip$/i, "");
     }
   }
@@ -183,18 +183,18 @@
     isProcessing = false;
 
     if (result.success) {
-      message = `作成完了: ${result.output_path}`;
+      message = `Created: ${result.output_path}`;
       messageType = "success";
       clearFiles();
     } else {
-      message = `エラー: ${result.error}`;
+      message = `Error: ${result.error}`;
       messageType = "error";
     }
   }
 
   function removeFile(index: number) {
     files = files.filter((_, i) => i !== index);
-    // ファイルがなくなったらアーカイブ名もリセット
+    // Reset archive name when all files are removed
     if (files.length === 0) {
       archiveName = "";
       displayOutputPath = "";
@@ -223,7 +223,7 @@
 </script>
 
 <main class="h-screen flex flex-col overflow-hidden">
-  <!-- ドロップゾーン -->
+  <!-- Drop zone -->
   <div class="flex-1 flex flex-col items-center justify-center p-4">
     <div
       class="w-full h-full border-4 border-dashed rounded-2xl flex flex-col items-center justify-center transition-all duration-200
@@ -236,13 +236,13 @@
           <div
             class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"
           ></div>
-          <p class="text-lg text-gray-600 dark:text-gray-300">処理中...</p>
+          <p class="text-lg text-gray-600 dark:text-gray-300">Processing...</p>
         </div>
       {:else if files.length > 0}
-        <!-- ファイルリスト表示 -->
+        <!-- File list view -->
         <div class="w-full max-w-xl px-4 overflow-y-auto">
           <h2 class="text-lg font-semibold mb-3 text-center">
-            ファイル一覧 ({files.length}件)
+            Files ({files.length})
           </h2>
           <ul class="space-y-2 max-h-36 overflow-y-auto mb-4">
             {#each files as file, index}
@@ -259,7 +259,7 @@
                 <button
                   onclick={() => removeFile(index)}
                   class="flex-shrink-0 text-red-500 hover:text-red-700 dark:hover:text-red-400"
-                  aria-label="削除"
+                  aria-label="Remove"
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -278,7 +278,7 @@
             {/each}
           </ul>
 
-          <!-- 保存先フォルダ（クリックで変更） -->
+          <!-- Output folder (click to change) -->
           <div class="mb-2">
             <button
               onclick={selectSaveLocation}
@@ -290,7 +290,7 @@
             </button>
           </div>
 
-          <!-- アーカイブ名入力 -->
+          <!-- Archive name input -->
           <div class="mb-4">
             <div class="flex gap-2">
               <input
@@ -309,19 +309,19 @@
               onclick={clearFiles}
               class="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500 rounded-lg font-medium transition-colors"
             >
-              クリア
+              Clear
             </button>
 
             <button
               onclick={zipMultipleFiles}
               class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
             >
-              Zipを作成
+              Create Zip
             </button>
           </div>
         </div>
       {:else}
-        <!-- ドロップ促進メッセージ -->
+        <!-- Drop prompt message -->
         <div class="flex flex-col items-center gap-4">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -339,17 +339,17 @@
           </svg>
           <div class="text-center">
             <p class="text-xl font-medium text-gray-600 dark:text-gray-300">
-              ファイルまたはフォルダをドロップ
+              Drop files or folders
             </p>
             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              フォルダは即座にZip化、ファイルはリストに追加されます
+              Folders are zipped instantly, files are added to the list
             </p>
           </div>
         </div>
       {/if}
     </div>
 
-    <!-- メッセージ表示 -->
+    <!-- Message display -->
     {#if message}
       <div
         class="mt-3 px-4 py-2 rounded-lg text-sm
@@ -362,15 +362,15 @@
     {/if}
   </div>
 
-  <!-- 設定パネル -->
+  <!-- Settings panel -->
   {#if files.length === 0}
     <div
       class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
     >
-    <!-- 出力先（ファイルリストがない時のみ表示） -->
+    <!-- Output location (shown only when file list is empty) -->
       <div class="mb-3">
         <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          保存先
+          Output Location
         </p>
         <div class="flex gap-4 flex-wrap">
           <label class="flex items-center gap-2 cursor-pointer">
@@ -382,7 +382,7 @@
               onchange={saveSettings}
               class="text-blue-600"
             />
-            <span class="text-sm">元の場所</span>
+            <span class="text-sm">Source</span>
           </label>
           <label class="flex items-center gap-2 cursor-pointer">
             <input
@@ -393,7 +393,7 @@
               onchange={saveSettings}
               class="text-blue-600"
             />
-            <span class="text-sm">ダウンロード</span>
+            <span class="text-sm">Downloads</span>
           </label>
           <label class="flex items-center gap-2 cursor-pointer">
             <input
@@ -404,12 +404,12 @@
               onchange={saveSettings}
               class="text-blue-600"
             />
-            <span class="text-sm">デスクトップ</span>
+            <span class="text-sm">Desktop</span>
           </label>
         </div>
       </div>
 
-      <!-- 親フォルダを含める（フォルダ圧縮時のみ有効なのでファイルリストがない時のみ表示） -->
+      <!-- Include parent folder (only effective for folder compression) -->
       <div class="flex items-center gap-3">
         <label class="relative inline-flex items-center cursor-pointer">
           <input
@@ -422,7 +422,7 @@
             class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-blue-600"
           ></div>
           <span class="ml-3 text-sm text-gray-700 dark:text-gray-300"
-            >フォルダ圧縮時、元のフォルダを含めて圧縮する</span
+            >Include parent folder when compressing folders</span
           >
         </label>
       </div>
