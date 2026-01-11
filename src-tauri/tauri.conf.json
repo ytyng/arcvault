@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "arcvault",
-        "width": 800,
-        "height": 600
+        "title": "ArcVault",
+        "width": 600,
+        "height": 600,
+        "resizable": true,
+        "minWidth": 400,
+        "minHeight": 400
       }
     ],
     "security": {
