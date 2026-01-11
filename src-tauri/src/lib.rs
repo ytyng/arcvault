@@ -1,6 +1,10 @@
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::Path;
-use std::process::Command;
 use serde::{Deserialize, Serialize};
+use zip::write::SimpleFileOptions;
+use zip::CompressionMethod;
+use walkdir::WalkDir;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ZipResult {
@@ -55,15 +59,76 @@ fn get_unique_output_path(base_path: &Path) -> std::path::PathBuf {
     }
 }
 
-/// ditto コマンドでフォルダを Zip 圧縮
-/// include_parent: true の場合、フォルダ自体を含める（--keepParent）
+/// ZIP圧縮オプション
+fn get_zip_options() -> SimpleFileOptions {
+    SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(6))
+}
+
+/// ディレクトリをZIPに追加
+fn add_directory_to_zip<W: Write + io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    source_dir: &Path,
+    prefix: &str,
+) -> io::Result<()> {
+    let options = get_zip_options();
+
+    for entry in WalkDir::new(source_dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+
+        // .DS_Store や __MACOSX を除外
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name == ".DS_Store" || name == "__MACOSX" || name.starts_with("._") {
+                continue;
+            }
+        }
+
+        let relative_path = path.strip_prefix(source_dir)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        // ZIP内でのパスを構築
+        let zip_path = if prefix.is_empty() {
+            relative_path.to_string_lossy().to_string()
+        } else {
+            format!("{}/{}", prefix, relative_path.to_string_lossy())
+        };
+
+        // 空のパス（ルート）はスキップ
+        if zip_path.is_empty() {
+            continue;
+        }
+
+        if path.is_dir() {
+            // ディレクトリエントリを追加（末尾に / を付ける）
+            let dir_path = if zip_path.ends_with('/') {
+                zip_path
+            } else {
+                format!("{}/", zip_path)
+            };
+            zip.add_directory(&dir_path, options.clone())?;
+        } else {
+            // ファイルを追加
+            zip.start_file(&zip_path, options.clone())?;
+            let mut file = File::open(path)?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer)?;
+            zip.write_all(&buffer)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// フォルダを Zip 圧縮
+/// include_parent: true の場合、フォルダ自体を含める（--keepParent相当）
 #[tauri::command]
 fn zip_folder(
     folder_path: &str,
     output_dir: &str,
     include_parent: bool,
 ) -> ZipResult {
-    // パスを正規化（シンボリックリンクや .. を解決）
+    // パスを正規化
     let folder = match canonicalize_path(folder_path) {
         Ok(p) => p,
         Err(e) => return ZipResult::error(e),
@@ -85,44 +150,38 @@ fn zip_folder(
     let base_output_path = output_dir_path.join(format!("{}.zip", folder_name));
     let output_path = get_unique_output_path(&base_output_path);
 
-    let output_path_str = match output_path.to_str() {
-        Some(s) => s,
-        None => return ZipResult::error("出力パスに無効な文字が含まれています"),
+    // ZIPファイルを作成
+    let file = match File::create(&output_path) {
+        Ok(f) => f,
+        Err(e) => return ZipResult::error(format!("ZIPファイルの作成に失敗: {}", e)),
     };
 
-    let folder_str = match folder.to_str() {
-        Some(s) => s,
-        None => return ZipResult::error("フォルダパスに無効な文字が含まれています"),
-    };
+    let mut zip = zip::ZipWriter::new(file);
 
-    let mut args = vec!["-c", "-k", "--sequesterRsrc"];
-    if include_parent {
-        args.push("--keepParent");
+    // プレフィックス（include_parent が true なら folder_name）
+    let prefix = if include_parent { folder_name } else { "" };
+
+    if let Err(e) = add_directory_to_zip(&mut zip, &folder, prefix) {
+        return ZipResult::error(format!("ZIP圧縮に失敗: {}", e));
     }
-    args.push(folder_str);
-    args.push(output_path_str);
 
-    match Command::new("ditto").args(&args).output() {
-        Ok(output) => {
-            if output.status.success() {
-                ZipResult::success(output_path.to_string_lossy().to_string())
-            } else {
-                ZipResult::error(String::from_utf8_lossy(&output.stderr).to_string())
-            }
-        }
-        Err(e) => ZipResult::error(e.to_string()),
+    if let Err(e) = zip.finish() {
+        return ZipResult::error(format!("ZIPの完了に失敗: {}", e));
+    }
+
+    match output_path.to_str() {
+        Some(s) => ZipResult::success(s.to_string()),
+        None => ZipResult::error("出力パスに無効な文字が含まれています"),
     }
 }
 
-/// 複数ファイルを一時フォルダにコピーしてから Zip 圧縮
+/// 複数ファイルを Zip 圧縮
 #[tauri::command]
 fn zip_files(
     file_paths: Vec<String>,
     output_dir: &str,
     archive_name: &str,
 ) -> ZipResult {
-    use std::fs;
-
     if file_paths.is_empty() {
         return ZipResult::error("ファイルが指定されていません");
     }
@@ -133,80 +192,72 @@ fn zip_files(
         Err(e) => return ZipResult::error(e),
     };
 
-    // 一時フォルダを作成
-    let temp_dir = std::env::temp_dir().join(format!("arcvault_{}", std::process::id()));
-    let staging_dir = temp_dir.join(archive_name);
+    let base_output_path = output_dir_path.join(format!("{}.zip", archive_name));
+    let output_path = get_unique_output_path(&base_output_path);
 
-    if let Err(e) = fs::create_dir_all(&staging_dir) {
-        return ZipResult::error(format!("一時フォルダの作成に失敗: {}", e));
-    }
+    // ZIPファイルを作成
+    let file = match File::create(&output_path) {
+        Ok(f) => f,
+        Err(e) => return ZipResult::error(format!("ZIPファイルの作成に失敗: {}", e)),
+    };
 
-    // ファイルを一時フォルダにコピー
+    let mut zip = zip::ZipWriter::new(file);
+    let options = get_zip_options();
+
+    // ファイルをZIPに追加
     for file_path in &file_paths {
-        // 各ファイルパスを正規化
         let src = match canonicalize_path(file_path) {
             Ok(p) => p,
             Err(_) => continue, // 存在しないファイルはスキップ
         };
 
-        let file_name = src.file_name().unwrap_or_default();
-        let dest = staging_dir.join(file_name);
+        let file_name = src.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+
+        // .DS_Store などを除外
+        if file_name == ".DS_Store" || file_name.starts_with("._") {
+            continue;
+        }
+
+        // アーカイブ内でのパス: archive_name/filename
+        let zip_path = format!("{}/{}", archive_name, file_name);
 
         if src.is_dir() {
-            if let Err(e) = copy_dir_recursive(&src, &dest) {
-                let _ = fs::remove_dir_all(&temp_dir);
-                return ZipResult::error(format!("フォルダのコピーに失敗: {}", e));
+            // ディレクトリの場合は再帰的に追加
+            if let Err(e) = add_directory_to_zip(&mut zip, &src, &zip_path) {
+                return ZipResult::error(format!("ディレクトリの追加に失敗: {}", e));
             }
-        } else if let Err(e) = fs::copy(&src, &dest) {
-            let _ = fs::remove_dir_all(&temp_dir);
-            return ZipResult::error(format!("ファイルのコピーに失敗: {}", e));
-        }
-    }
-
-    let base_output_path = output_dir_path.join(format!("{}.zip", archive_name));
-    let output_path = get_unique_output_path(&base_output_path);
-
-    // ditto で圧縮
-    let result = Command::new("ditto")
-        .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
-        .arg(&staging_dir)
-        .arg(&output_path)
-        .output();
-
-    // 一時フォルダを削除
-    let _ = fs::remove_dir_all(&temp_dir);
-
-    match result {
-        Ok(output) => {
-            if output.status.success() {
-                ZipResult::success(output_path.to_string_lossy().to_string())
-            } else {
-                ZipResult::error(String::from_utf8_lossy(&output.stderr).to_string())
-            }
-        }
-        Err(e) => ZipResult::error(e.to_string()),
-    }
-}
-
-/// ディレクトリを再帰的にコピー
-fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::fs;
-
-    fs::create_dir_all(dest)?;
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-
-        if path.is_dir() {
-            copy_dir_recursive(&path, &dest_path)?;
         } else {
-            fs::copy(&path, &dest_path)?;
+            // ファイルを追加
+            if let Err(e) = zip.start_file(&zip_path, options.clone()) {
+                return ZipResult::error(format!("ファイルエントリの作成に失敗: {}", e));
+            }
+
+            let mut src_file = match File::open(&src) {
+                Ok(f) => f,
+                Err(e) => return ZipResult::error(format!("ファイルのオープンに失敗: {}", e)),
+            };
+
+            let mut buffer = Vec::new();
+            if let Err(e) = src_file.read_to_end(&mut buffer) {
+                return ZipResult::error(format!("ファイルの読み込みに失敗: {}", e));
+            }
+
+            if let Err(e) = zip.write_all(&buffer) {
+                return ZipResult::error(format!("ファイルの書き込みに失敗: {}", e));
+            }
         }
     }
 
-    Ok(())
+    if let Err(e) = zip.finish() {
+        return ZipResult::error(format!("ZIPの完了に失敗: {}", e));
+    }
+
+    match output_path.to_str() {
+        Some(s) => ZipResult::success(s.to_string()),
+        None => ZipResult::error("出力パスに無効な文字が含まれています"),
+    }
 }
 
 /// ダウンロードフォルダのパスを取得
