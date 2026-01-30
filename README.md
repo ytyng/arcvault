@@ -2,6 +2,8 @@
 
 A macOS desktop application for creating Windows-compatible ZIP files.
 
+~[](/documents/images/flashcap-20260130-110557.png)
+
 ## Features
 
 - **Windows Compatible**: Sets UTF-8 Language Encoding Flag (bit 11) to prevent garbled filenames on Windows
