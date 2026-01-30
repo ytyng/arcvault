@@ -1,5 +1,7 @@
 # ArcVault
 
+![](./src-tauri/icons/128x128@2x.png)
+
 A macOS desktop application for creating Windows-compatible ZIP files.
 
 ![](/documents/images/flashcap-20260130-110557.png)
