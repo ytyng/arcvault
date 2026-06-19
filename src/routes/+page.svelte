@@ -6,18 +6,30 @@
   import { onMount, onDestroy } from "svelte";
 
   type OutputLocation = "source" | "downloads" | "desktop" | "custom";
+  type Mode = "archive" | "extract";
+
+  let mode = $state<Mode>("archive");
 
   let files = $state<string[]>([]);
   let isDragging = $state(false);
   let isProcessing = $state(false);
   let message = $state("");
-  let messageType = $state<"success" | "error" | "">("");
+  let messageType = $state<"success" | "error" | "info" | "">("");
 
   let outputLocation = $state<OutputLocation>("source");
   let includeParent = $state(true);
   let archiveName = $state("");
   let customOutputPath = $state<string | null>(null);
   let displayOutputPath = $state<string>("");
+
+  // Extract mode state
+  let convertTextEncoding = $state(false);
+
+  // Password modal state
+  let showPasswordModal = $state(false);
+  let passwordInput = $state("");
+  let passwordModalError = $state("");
+  let passwordResolve: ((value: string | null) => void) | null = null;
 
   let store: Store | null = null;
   let unlisten: (() => void) | null = null;
@@ -27,16 +39,21 @@
       defaults: {
         outputLocation: "source",
         includeParent: true,
+        convertTextEncoding: false,
       },
       autoSave: true,
     });
 
     const savedLocation = await store.get<OutputLocation>("outputLocation");
     const savedIncludeParent = await store.get<boolean>("includeParent");
+    const savedConvert = await store.get<boolean>("convertTextEncoding");
 
     if (savedLocation && savedLocation !== "custom") outputLocation = savedLocation;
     if (savedIncludeParent !== null && savedIncludeParent !== undefined) {
       includeParent = savedIncludeParent;
+    }
+    if (savedConvert !== null && savedConvert !== undefined) {
+      convertTextEncoding = savedConvert;
     }
 
     unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
@@ -44,7 +61,11 @@
         isDragging = true;
       } else if (event.payload.type === "drop") {
         isDragging = false;
-        await handleFileDrop(event.payload.paths);
+        if (mode === "extract") {
+          await handleExtractDrop(event.payload.paths);
+        } else {
+          await handleFileDrop(event.payload.paths);
+        }
       } else {
         isDragging = false;
       }
@@ -55,12 +76,22 @@
     if (unlisten) unlisten();
   });
 
+  function switchMode(next: Mode) {
+    if (mode === next) return;
+    mode = next;
+    // Reset transient state so the two modes don't leak into each other
+    clearFiles();
+    message = "";
+    messageType = "";
+  }
+
   async function saveSettings() {
     if (!store) return;
     if (outputLocation !== "custom") {
       await store.set("outputLocation", outputLocation);
     }
     await store.set("includeParent", includeParent);
+    await store.set("convertTextEncoding", convertTextEncoding);
   }
 
   async function getOutputDir(sourcePath: string): Promise<string> {
@@ -87,6 +118,8 @@
       displayOutputPath = "";
     }
   }
+
+  // ---------- Archive mode ----------
 
   async function handleFileDrop(paths: string[]) {
     if (paths.length === 0) return;
@@ -192,6 +225,119 @@
     }
   }
 
+  // ---------- Extract mode ----------
+
+  // Show the password modal and resolve with the entered password, or null if cancelled.
+  function promptPassword(errorText = ""): Promise<string | null> {
+    passwordInput = "";
+    passwordModalError = errorText;
+    showPasswordModal = true;
+    return new Promise((resolve) => {
+      passwordResolve = resolve;
+    });
+  }
+
+  function submitPassword() {
+    showPasswordModal = false;
+    const resolve = passwordResolve;
+    passwordResolve = null;
+    resolve?.(passwordInput);
+  }
+
+  function cancelPassword() {
+    showPasswordModal = false;
+    const resolve = passwordResolve;
+    passwordResolve = null;
+    resolve?.(null);
+  }
+
+  function onPasswordKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitPassword();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelPassword();
+    }
+  }
+
+  async function handleExtractDrop(paths: string[]) {
+    const zips = paths.filter((p) => p.toLowerCase().endsWith(".zip"));
+    if (zips.length === 0) {
+      message = "Please drop .zip files";
+      messageType = "error";
+      return;
+    }
+
+    isProcessing = true;
+    message = "";
+    const extracted: string[] = [];
+
+    try {
+      for (const zipPath of zips) {
+        const outputDir = await getOutputDir(zipPath);
+        let pw: string | null = null;
+        let triedPassword = false;
+
+        // Retry loop: prompt for a password only if the archive turns out to be encrypted.
+        while (true) {
+          const result = await invoke<{
+            success: boolean;
+            output_path: string | null;
+            error: string | null;
+            needs_password: boolean;
+          }>("unzip_archive", {
+            zipPath,
+            outputDir,
+            password: pw,
+            convertTextEncoding,
+          });
+
+          if (result.success && result.output_path) {
+            extracted.push(result.output_path);
+            break;
+          }
+
+          if (result.needs_password) {
+            const entered = await promptPassword(
+              triedPassword ? "Incorrect password. Please try again." : "",
+            );
+            if (entered === null) {
+              break; // User cancelled: skip this archive
+            }
+            pw = entered;
+            triedPassword = true;
+            continue;
+          }
+
+          // Non-password error: stop and report, keeping any partial successes
+          message =
+            extracted.length > 0
+              ? `Extracted ${extracted.length}, then error: ${result.error}`
+              : `Error: ${result.error}`;
+          messageType = "error";
+          return;
+        }
+      }
+    } finally {
+      isProcessing = false;
+    }
+
+    if (extracted.length > 0) {
+      message =
+        extracted.length === 1
+          ? `Extracted: ${extracted[0]}`
+          : `Extracted ${extracted.length} archives`;
+      messageType = "success";
+    } else if (!message) {
+      // Every dropped archive was cancelled at the password prompt
+      message = "Extraction cancelled";
+      messageType = "info";
+    }
+  }
+
+  // ---------- Shared ----------
+
   function removeFile(index: number) {
     files = files.filter((_, i) => i !== index);
     // Reset archive name when all files are removed
@@ -223,8 +369,30 @@
 </script>
 
 <main class="h-screen flex flex-col overflow-hidden">
+  <!-- Mode tabs -->
+  <div class="flex border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+    <button
+      onclick={() => switchMode("archive")}
+      class="flex-1 py-3 text-sm font-medium transition-colors
+        {mode === 'archive'
+        ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400'
+        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}"
+    >
+      Archive
+    </button>
+    <button
+      onclick={() => switchMode("extract")}
+      class="flex-1 py-3 text-sm font-medium transition-colors
+        {mode === 'extract'
+        ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400'
+        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}"
+    >
+      Extract
+    </button>
+  </div>
+
   <!-- Drop zone -->
-  <div class="flex-1 flex flex-col items-center justify-center p-4">
+  <div class="flex-1 flex flex-col items-center justify-center p-4 overflow-hidden">
     <div
       class="w-full h-full border-4 border-dashed rounded-2xl flex flex-col items-center justify-center transition-all duration-200
         {isDragging
@@ -237,6 +405,32 @@
             class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"
           ></div>
           <p class="text-lg text-gray-600 dark:text-gray-300">Processing...</p>
+        </div>
+      {:else if mode === "extract"}
+        <!-- Extract drop prompt -->
+        <div class="flex flex-col items-center gap-4">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-16 w-16 text-gray-400 dark:text-gray-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.5"
+              d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
+            />
+          </svg>
+          <div class="text-center">
+            <p class="text-xl font-medium text-gray-600 dark:text-gray-300">
+              Drop .zip files to extract
+            </p>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Japanese (Shift-JIS) filenames are decoded without mojibake
+            </p>
+          </div>
         </div>
       {:else if files.length > 0}
         <!-- File list view -->
@@ -321,7 +515,7 @@
           </div>
         </div>
       {:else}
-        <!-- Drop prompt message -->
+        <!-- Archive drop prompt message -->
         <div class="flex flex-col items-center gap-4">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -352,9 +546,11 @@
     <!-- Message display -->
     {#if message}
       <div
-        class="mt-3 px-4 py-2 rounded-lg text-sm
+        class="mt-3 px-4 py-2 rounded-lg text-sm break-all
           {messageType === 'success'
           ? 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-200'
+          : messageType === 'info'
+          ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'
           : 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200'}"
       >
         {message}
@@ -363,7 +559,71 @@
   </div>
 
   <!-- Settings panel -->
-  {#if files.length === 0}
+  {#if mode === "extract"}
+    <div
+      class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+    >
+      <!-- Output location -->
+      <div class="mb-3">
+        <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          Output Location
+        </p>
+        <div class="flex gap-4 flex-wrap">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="extractOutputLocation"
+              value="source"
+              bind:group={outputLocation}
+              onchange={saveSettings}
+              class="text-blue-600"
+            />
+            <span class="text-sm">Source</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="extractOutputLocation"
+              value="downloads"
+              bind:group={outputLocation}
+              onchange={saveSettings}
+              class="text-blue-600"
+            />
+            <span class="text-sm">Downloads</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="extractOutputLocation"
+              value="desktop"
+              bind:group={outputLocation}
+              onchange={saveSettings}
+              class="text-blue-600"
+            />
+            <span class="text-sm">Desktop</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Convert text encoding to UTF-8 -->
+      <div class="flex items-center gap-3">
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input
+            type="checkbox"
+            bind:checked={convertTextEncoding}
+            onchange={saveSettings}
+            class="sr-only peer"
+          />
+          <div
+            class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-blue-600"
+          ></div>
+          <span class="ml-3 text-sm text-gray-700 dark:text-gray-300"
+            >Convert text files to UTF-8 (Shift-JIS → UTF-8)</span
+          >
+        </label>
+      </div>
+    </div>
+  {:else if files.length === 0}
     <div
       class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
     >
@@ -425,6 +685,55 @@
             >Include parent folder when compressing folders</span
           >
         </label>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Password modal (shown only when a dropped archive is encrypted) -->
+  {#if showPasswordModal}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    >
+      <div
+        class="w-full max-w-sm bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-5"
+      >
+        <h2 class="text-lg font-semibold mb-1 text-gray-900 dark:text-gray-100">
+          Password required
+        </h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+          This archive is encrypted. Enter its password to extract it.
+        </p>
+
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          type="password"
+          bind:value={passwordInput}
+          onkeydown={onPasswordKeydown}
+          autofocus
+          placeholder="Password"
+          class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        />
+
+        {#if passwordModalError}
+          <p class="text-sm text-red-600 dark:text-red-400 mt-2">
+            {passwordModalError}
+          </p>
+        {/if}
+
+        <div class="flex gap-2 justify-end mt-4">
+          <button
+            onclick={cancelPassword}
+            class="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500 rounded-lg font-medium transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onclick={submitPassword}
+            class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+          >
+            Extract
+          </button>
+        </div>
       </div>
     </div>
   {/if}

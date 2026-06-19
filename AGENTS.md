@@ -33,6 +33,7 @@ Defined in `src-tauri/src/lib.rs`:
 
 - `zip_folder`: Compress a single folder to ZIP
 - `zip_files`: Compress multiple files/folders to ZIP
+- `unzip_archive`: Extract a ZIP (Archive/Extract tabbed UI). Decodes Shift-JIS (CP932) filenames to avoid mojibake on Windows-made ZIPs, supports password-protected archives (ZipCrypto + AES), and can optionally convert Shift-JIS text files to UTF-8
 - `get_downloads_dir`: Get Downloads folder path
 - `get_desktop_dir`: Get Desktop folder path
 - `get_parent_dir`: Get parent directory path
