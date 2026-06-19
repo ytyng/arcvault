@@ -74,6 +74,33 @@ fn get_unique_output_path(base_path: &Path) -> std::path::PathBuf {
     }
 }
 
+/// Returns a unique directory path by appending `_N` to the whole folder name.
+///
+/// Unlike `get_unique_output_path` (which is file-oriented and splits off an
+/// extension), this keeps the name intact — extracting `foo.zip` into an
+/// existing `foo/` yields `foo_1`, not `foo_1.zip`, and stems containing dots
+/// (e.g. `archive.backup`) are not rewritten.
+fn get_unique_dir_path(base_path: &Path) -> std::path::PathBuf {
+    if !base_path.exists() {
+        return base_path.to_path_buf();
+    }
+
+    let parent = base_path.parent().unwrap_or(Path::new("."));
+    let name = base_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("extracted");
+
+    let mut counter = 1;
+    loop {
+        let new_path = parent.join(format!("{}_{}", name, counter));
+        if !new_path.exists() {
+            return new_path;
+        }
+        counter += 1;
+    }
+}
+
 /// ZIP compression options
 fn get_zip_options() -> SimpleFileOptions {
     SimpleFileOptions::default()
@@ -387,7 +414,7 @@ async fn unzip_archive(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("extracted");
-    let extract_root = get_unique_output_path(&output_dir_path.join(stem));
+    let extract_root = get_unique_dir_path(&output_dir_path.join(stem));
 
     if let Err(e) = std::fs::create_dir_all(&extract_root) {
         return ZipResult::error(format!("Failed to create output folder: {}", e));
@@ -555,6 +582,26 @@ mod tests {
         let original = "already utf-8 テキスト".as_bytes();
         let converted = convert_text_to_utf8(original);
         assert_eq!(converted, original);
+    }
+
+    #[test]
+    fn unique_dir_path_keeps_name_without_extension() {
+        // Non-existent path is returned unchanged.
+        let base = Path::new("/tmp/arcvault-nonexistent-xyz/foo");
+        assert_eq!(get_unique_dir_path(base), base.to_path_buf());
+
+        // For an existing folder, `_N` is appended to the whole name without
+        // inventing a `.zip` extension or splitting on dots.
+        let dir = std::env::temp_dir().join("arcvault_unique_dir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("archive.backup");
+        std::fs::create_dir_all(&existing).unwrap();
+
+        let unique = get_unique_dir_path(&existing);
+        assert_eq!(unique, dir.join("archive.backup_1"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

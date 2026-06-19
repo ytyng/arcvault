@@ -14,7 +14,7 @@
   let isDragging = $state(false);
   let isProcessing = $state(false);
   let message = $state("");
-  let messageType = $state<"success" | "error" | "">("");
+  let messageType = $state<"success" | "error" | "info" | "">("");
 
   let outputLocation = $state<OutputLocation>("source");
   let includeParent = $state(true);
@@ -310,8 +310,11 @@
             continue;
           }
 
-          // Non-password error: stop and report
-          message = `Error: ${result.error}`;
+          // Non-password error: stop and report, keeping any partial successes
+          message =
+            extracted.length > 0
+              ? `Extracted ${extracted.length}, then error: ${result.error}`
+              : `Error: ${result.error}`;
           messageType = "error";
           return;
         }
@@ -326,6 +329,10 @@
           ? `Extracted: ${extracted[0]}`
           : `Extracted ${extracted.length} archives`;
       messageType = "success";
+    } else if (!message) {
+      // Every dropped archive was cancelled at the password prompt
+      message = "Extraction cancelled";
+      messageType = "info";
     }
   }
 
@@ -542,6 +549,8 @@
         class="mt-3 px-4 py-2 rounded-lg text-sm break-all
           {messageType === 'success'
           ? 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-200'
+          : messageType === 'info'
+          ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'
           : 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200'}"
       >
         {message}
