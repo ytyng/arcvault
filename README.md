@@ -4,7 +4,11 @@
 
 A macOS desktop application for creating Windows-compatible ZIP files.
 
-![](/documents/images/flashcap-20260130-110557.png)
+## Screenshots
+
+| Archive | Extract |
+| --- | --- |
+| ![Archive tab: drop files or folders to create a ZIP](./docs/images/screenshot-archive.png) | ![Extract tab: drop .zip files to extract](./docs/images/screenshot-extract.png) |
 
 ## Features
 
@@ -14,6 +18,9 @@ A macOS desktop application for creating Windows-compatible ZIP files.
 - **Multiple Files Support**: Combine multiple files/folders into one ZIP
 - **Flexible Output Location**: Choose from source location, Downloads, Desktop, or custom path
 - **macOS Junk Exclusion**: Automatically excludes `.DS_Store`, `__MACOSX`, and `._` prefixed files
+- **Extraction**: Drop a `.zip` to extract it, with Shift-JIS (CP932) filenames decoded without mojibake
+- **Password Protected Archives**: Prompts for a password when the archive is encrypted
+- **Optional Text Conversion**: Converts Shift-JIS text files to UTF-8 during extraction
 
 ## Tech Stack
 
