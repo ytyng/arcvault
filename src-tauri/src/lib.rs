@@ -365,15 +365,17 @@ fn convert_text_to_utf8(bytes: &[u8]) -> Vec<u8> {
 /// tools write `\`-separated names, and on Windows `PathBuf::push` treats `\`
 /// as a separator too — so a `..\foo` segment must not survive as a single
 /// "literal" component. We split on both separators and reject `..` in either
-/// form. Components containing `:` are also rejected: on Windows a `C:` prefix
-/// makes `push` replace the entire path with a drive-relative one.
+/// form. On Windows, components containing `:` are also rejected: a `C:`
+/// prefix makes `push` replace the entire path with a drive-relative one.
+/// On other platforms `:` is an ordinary filename character (e.g. timestamps)
+/// and must not cause entries to be skipped.
 fn safe_extract_path(root: &Path, entry_name: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
     for component in entry_name.split(['/', '\\']) {
         if component.is_empty() || component == "." {
             continue;
         }
-        if component == ".." || component.contains(':') {
+        if component == ".." || (cfg!(windows) && component.contains(':')) {
             return None;
         }
         path.push(component);
@@ -631,13 +633,31 @@ mod tests {
         assert!(safe_extract_path(root, "..\\escape.txt").is_none());
         assert!(safe_extract_path(root, "a\\..\\..\\b.txt").is_none());
         assert!(safe_extract_path(root, "a/..\\..\\b.txt").is_none());
-        // Drive prefixes would replace the whole path on Windows.
-        assert!(safe_extract_path(root, "C:\\evil.txt").is_none());
-        assert!(safe_extract_path(root, "C:/evil.txt").is_none());
         // Backslash-separated (non-traversal) names now become nested dirs.
         assert_eq!(
             safe_extract_path(root, "sub\\file.txt"),
             Some(Path::new("/tmp/extract/sub/file.txt").to_path_buf())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_drive_prefixes_on_windows() {
+        // A `C:` component would make `PathBuf::push` replace the whole path.
+        let root = Path::new("C:\\extract");
+        assert!(safe_extract_path(root, "C:\\evil.txt").is_none());
+        assert!(safe_extract_path(root, "C:/evil.txt").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn keeps_colon_names_on_unix() {
+        // `:` is an ordinary filename character outside Windows; entries like
+        // timestamped logs must not be skipped.
+        let root = Path::new("/tmp/extract");
+        assert_eq!(
+            safe_extract_path(root, "logs/2026-07-22T12:00:00.txt"),
+            Some(Path::new("/tmp/extract/logs/2026-07-22T12:00:00.txt").to_path_buf())
         );
     }
 }
