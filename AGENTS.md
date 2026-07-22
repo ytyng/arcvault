@@ -62,7 +62,20 @@ pnpm tauri build
 
 # Icon generation
 pnpm tauri icon /path/to/icon.png
+
+# Release build (triggers GitHub Actions, uploads to GitHub Releases)
+pnpm release
 ```
+
+## Release
+
+- `.github/workflows/release.yml` builds macOS (universal dmg, ad-hoc signed) and
+  Windows (unsigned NSIS exe) via `tauri-apps/tauri-action`, publishing to the
+  `v<version>` GitHub Release. Trigger is `workflow_dispatch` only (no auto build on push).
+- `pnpm release` (`scripts/release.sh`) triggers the workflow with `gh workflow run`
+  and watches it. Bump `version` in `src-tauri/tauri.conf.json` and `package.json` first.
+- Note: the script is named `release`, not `publish`, because `pnpm publish` is a
+  built-in pnpm command (npm registry publish) and cannot be shadowed by a script.
 
 ## Svelte 5 Runes
 

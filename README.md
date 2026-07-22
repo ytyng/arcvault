@@ -22,6 +22,20 @@ A macOS desktop application for creating Windows-compatible ZIP files.
 - **Password Protected Archives**: Prompts for a password when the archive is encrypted
 - **Optional Text Conversion**: Converts Shift-JIS text files to UTF-8 during extraction
 
+## Download
+
+Prebuilt binaries are available on the [latest GitHub Release](https://github.com/ytyng/arcvault/releases/latest):
+
+- **macOS**: `arcvault_x.x.x_universal.dmg` (Intel / Apple Silicon universal)
+- **Windows**: `arcvault_x.x.x_x64-setup.exe` (NSIS installer)
+
+> **Note (macOS)**: The app is ad-hoc signed and not notarized. On first launch,
+> right-click the app and choose "Open", or remove the quarantine attribute:
+> `xattr -dr com.apple.quarantine /Applications/arcvault.app`
+>
+> **Note (Windows)**: The installer is unsigned, so SmartScreen may warn you.
+> Click "More info" → "Run anyway".
+
 ## Tech Stack
 
 - **Frontend**: SvelteKit 5 + Tailwind CSS 4
@@ -55,6 +69,21 @@ pnpm tauri dev
 pnpm build
 pnpm tauri build
 ```
+
+### Release
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`) and
+uploaded to GitHub Releases. The workflow is triggered manually, not on push:
+
+```bash
+# 1. Bump "version" in src-tauri/tauri.conf.json (and package.json)
+# 2. Commit and push to main
+# 3. Trigger the build (requires authenticated gh CLI)
+pnpm release
+```
+
+This builds a macOS universal dmg (ad-hoc signed, not notarized) and an
+unsigned Windows NSIS installer, then publishes them to the `v<version>` Release.
 
 ## Usage
 

@@ -129,11 +129,18 @@ fn add_directory_to_zip<W: Write + io::Seek>(
         let relative_path = path.strip_prefix(source_dir)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        // Build path within ZIP
+        // Build path within ZIP. Join components with `/` explicitly: ZIP entry
+        // names must use `/` per the spec, but `to_string_lossy()` would keep
+        // Windows `\` separators.
+        let relative_str = relative_path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         let zip_path = if prefix.is_empty() {
-            relative_path.to_string_lossy().to_string()
+            relative_str
         } else {
-            format!("{}/{}", prefix, relative_path.to_string_lossy())
+            format!("{}/{}", prefix, relative_str)
         };
 
         // Skip empty path (root)
@@ -354,18 +361,21 @@ fn convert_text_to_utf8(bytes: &[u8]) -> Vec<u8> {
 /// Safely join a ZIP entry name onto an extraction root, preventing Zip Slip.
 /// Returns None if the entry would escape the root (e.g. contains `..`).
 ///
-/// ZIP entry names use `/` as the separator (per the spec), so we only split on
-/// `/`. A backslash-separated segment (e.g. `..\foo` from some Windows tools)
-/// stays a single component here; since this app is macOS-only and `\` is an
-/// ordinary filename character there, it cannot traverse directories — the
-/// segment is written verbatim as one literal path component.
+/// ZIP entry names use `/` as the separator (per the spec), but some Windows
+/// tools write `\`-separated names, and on Windows `PathBuf::push` treats `\`
+/// as a separator too — so a `..\foo` segment must not survive as a single
+/// "literal" component. We split on both separators and reject `..` in either
+/// form. On Windows, components containing `:` are also rejected: a `C:`
+/// prefix makes `push` replace the entire path with a drive-relative one.
+/// On other platforms `:` is an ordinary filename character (e.g. timestamps)
+/// and must not cause entries to be skipped.
 fn safe_extract_path(root: &Path, entry_name: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
-    for component in entry_name.split('/') {
+    for component in entry_name.split(['/', '\\']) {
         if component.is_empty() || component == "." {
             continue;
         }
-        if component == ".." {
+        if component == ".." || (cfg!(windows) && component.contains(':')) {
             return None;
         }
         path.push(component);
@@ -452,7 +462,7 @@ async fn unzip_archive(
         if name.contains("__MACOSX/") || name.starts_with("__MACOSX") {
             continue;
         }
-        if let Some(base) = name.rsplit('/').next() {
+        if let Some(base) = name.rsplit(['/', '\\']).next() {
             if base == ".DS_Store" || base.starts_with("._") {
                 continue;
             }
@@ -612,6 +622,42 @@ mod tests {
         assert_eq!(
             safe_extract_path(root, "sub/dir/file.txt"),
             Some(Path::new("/tmp/extract/sub/dir/file.txt").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn rejects_backslash_zip_slip_paths() {
+        // On Windows, `PathBuf::push` treats `\` as a separator, so
+        // backslash-separated traversal must be rejected as well.
+        let root = Path::new("/tmp/extract");
+        assert!(safe_extract_path(root, "..\\escape.txt").is_none());
+        assert!(safe_extract_path(root, "a\\..\\..\\b.txt").is_none());
+        assert!(safe_extract_path(root, "a/..\\..\\b.txt").is_none());
+        // Backslash-separated (non-traversal) names now become nested dirs.
+        assert_eq!(
+            safe_extract_path(root, "sub\\file.txt"),
+            Some(Path::new("/tmp/extract/sub/file.txt").to_path_buf())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_drive_prefixes_on_windows() {
+        // A `C:` component would make `PathBuf::push` replace the whole path.
+        let root = Path::new("C:\\extract");
+        assert!(safe_extract_path(root, "C:\\evil.txt").is_none());
+        assert!(safe_extract_path(root, "C:/evil.txt").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn keeps_colon_names_on_unix() {
+        // `:` is an ordinary filename character outside Windows; entries like
+        // timestamped logs must not be skipped.
+        let root = Path::new("/tmp/extract");
+        assert_eq!(
+            safe_extract_path(root, "logs/2026-07-22T12:00:00.txt"),
+            Some(Path::new("/tmp/extract/logs/2026-07-22T12:00:00.txt").to_path_buf())
         );
     }
 }
