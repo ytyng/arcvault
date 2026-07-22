@@ -354,18 +354,19 @@ fn convert_text_to_utf8(bytes: &[u8]) -> Vec<u8> {
 /// Safely join a ZIP entry name onto an extraction root, preventing Zip Slip.
 /// Returns None if the entry would escape the root (e.g. contains `..`).
 ///
-/// ZIP entry names use `/` as the separator (per the spec), so we only split on
-/// `/`. A backslash-separated segment (e.g. `..\foo` from some Windows tools)
-/// stays a single component here; since this app is macOS-only and `\` is an
-/// ordinary filename character there, it cannot traverse directories — the
-/// segment is written verbatim as one literal path component.
+/// ZIP entry names use `/` as the separator (per the spec), but some Windows
+/// tools write `\`-separated names, and on Windows `PathBuf::push` treats `\`
+/// as a separator too — so a `..\foo` segment must not survive as a single
+/// "literal" component. We split on both separators and reject `..` in either
+/// form. Components containing `:` are also rejected: on Windows a `C:` prefix
+/// makes `push` replace the entire path with a drive-relative one.
 fn safe_extract_path(root: &Path, entry_name: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
-    for component in entry_name.split('/') {
+    for component in entry_name.split(['/', '\\']) {
         if component.is_empty() || component == "." {
             continue;
         }
-        if component == ".." {
+        if component == ".." || component.contains(':') {
             return None;
         }
         path.push(component);
@@ -612,6 +613,24 @@ mod tests {
         assert_eq!(
             safe_extract_path(root, "sub/dir/file.txt"),
             Some(Path::new("/tmp/extract/sub/dir/file.txt").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn rejects_backslash_zip_slip_paths() {
+        // On Windows, `PathBuf::push` treats `\` as a separator, so
+        // backslash-separated traversal must be rejected as well.
+        let root = Path::new("/tmp/extract");
+        assert!(safe_extract_path(root, "..\\escape.txt").is_none());
+        assert!(safe_extract_path(root, "a\\..\\..\\b.txt").is_none());
+        assert!(safe_extract_path(root, "a/..\\..\\b.txt").is_none());
+        // Drive prefixes would replace the whole path on Windows.
+        assert!(safe_extract_path(root, "C:\\evil.txt").is_none());
+        assert!(safe_extract_path(root, "C:/evil.txt").is_none());
+        // Backslash-separated (non-traversal) names now become nested dirs.
+        assert_eq!(
+            safe_extract_path(root, "sub\\file.txt"),
+            Some(Path::new("/tmp/extract/sub/file.txt").to_path_buf())
         );
     }
 }
