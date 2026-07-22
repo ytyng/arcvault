@@ -182,10 +182,12 @@
     });
 
     if (result) {
-      // Split full path into parent directory and filename
-      const pathParts = result.split("/");
-      const fileName = pathParts.pop() || "archive.zip";
-      customOutputPath = pathParts.join("/");
+      // Split full path into parent directory and filename.
+      // Handle both separators so Windows paths (C:\dir\file.zip) keep their
+      // original form in customOutputPath instead of being mangled.
+      const sepIndex = Math.max(result.lastIndexOf("/"), result.lastIndexOf("\\"));
+      const fileName = sepIndex >= 0 ? result.slice(sepIndex + 1) : result;
+      customOutputPath = sepIndex >= 0 ? result.slice(0, sepIndex) : "";
       outputLocation = "custom";
       displayOutputPath = customOutputPath;
 
@@ -364,7 +366,8 @@
   }
 
   function getFileName(path: string): string {
-    return path.split("/").pop() || path;
+    // Windows paths use backslash separators.
+    return path.split(/[/\\]/).pop() || path;
   }
 </script>
 

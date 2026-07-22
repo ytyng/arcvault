@@ -129,11 +129,18 @@ fn add_directory_to_zip<W: Write + io::Seek>(
         let relative_path = path.strip_prefix(source_dir)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        // Build path within ZIP
+        // Build path within ZIP. Join components with `/` explicitly: ZIP entry
+        // names must use `/` per the spec, but `to_string_lossy()` would keep
+        // Windows `\` separators.
+        let relative_str = relative_path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         let zip_path = if prefix.is_empty() {
-            relative_path.to_string_lossy().to_string()
+            relative_str
         } else {
-            format!("{}/{}", prefix, relative_path.to_string_lossy())
+            format!("{}/{}", prefix, relative_str)
         };
 
         // Skip empty path (root)
@@ -453,7 +460,7 @@ async fn unzip_archive(
         if name.contains("__MACOSX/") || name.starts_with("__MACOSX") {
             continue;
         }
-        if let Some(base) = name.rsplit('/').next() {
+        if let Some(base) = name.rsplit(['/', '\\']).next() {
             if base == ".DS_Store" || base.starts_with("._") {
                 continue;
             }
