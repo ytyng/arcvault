@@ -21,7 +21,9 @@ jobs:
       matrix:
         include:
           # Intel / Apple Silicon 両対応の universal バイナリを dmg で配布する。
-          # 署名は tauri.conf.json の signingIdentity "-" による ad-hoc 署名 (公証なし)。
+          # 署名は下記ステップで Developer ID + 公証 (notarization)。ローカルビルドは
+          # tauri.conf.json の signingIdentity "-" で ad-hoc、CI は APPLE_SIGNING_IDENTITY が
+          # それを上書きする (tauri-cli の優先順位: env > config)。
           - platform: macos-latest
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin --bundles dmg
@@ -60,15 +62,45 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # macOS のみ: Developer ID 証明書を一時 keychain にインポートする。
+      # tauri-action 自身は証明書をインポートしないため、ビルド前にこのステップで
+      # 用意しておく。keychain のパスワードは使い捨てなので Secret にせず生成する。
+      - name: Import Apple Developer certificate (macOS)
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import "$RUNNER_TEMP/certificate.p12" -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+          rm "$RUNNER_TEMP/certificate.p12"
+
       # tauri.conf.json の version から v<version> タグの Release を作成し、
       # ビルド成果物をアップロードする。並列 matrix の片方だけで公開状態に
       # ならないよう draft で作成し、全プラットフォーム成功後に publish ジョブで公開する。
       # 注意: 公開済みバージョンと同じ version で再実行すると、tauri-action が
       # draft 状態の不一致でエラーになる。必ず version を上げてから実行すること。
+      # macOS の APPLE_* を渡すと tauri-action が Developer ID 署名 + 公証 + staple を
+      # 自動で行う。Apple 認証情報を受け取るため、可変タグ @v0 ではなく commit SHA に
+      # 固定する (タグが差し替えられて secrets を抜かれるサプライチェーン攻撃を防ぐ)。
       - name: Build and upload to GitHub Release (draft)
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple 認証情報は macOS ジョブにのみ渡す (Windows では空文字にして露出させない)。
+          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: v__VERSION__
           releaseName: ArcVault v__VERSION__
