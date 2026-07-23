@@ -26,6 +26,18 @@ case "${BUMP}" in
     ;;
 esac
 
+# gh の存在と認証を、何かを書き換える前に確認する。push した後で gh が使えないと、
+# bump コミットだけが main に載って workflow が起動されず、次回実行が別 version を
+# 採番してしまう (公開されない version が main に取り残される)。
+if ! command -v gh >/dev/null 2>&1; then
+  echo "Error: gh CLI not found. Install it and run 'gh auth login'." >&2
+  exit 1
+fi
+if ! gh auth status >/dev/null 2>&1; then
+  echo "Error: gh is not authenticated. Run 'gh auth login'." >&2
+  exit 1
+fi
+
 # 採番は main のクリーンな状態からのみ行う。ローカルの未コミット変更が紛れ込んだり、
 # origin/main とズレたままビルドするのを防ぐ (ビルドは origin/main の内容で走るため)。
 if [ "$(git branch --show-current)" != "main" ]; then
