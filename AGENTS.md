@@ -72,8 +72,14 @@ pnpm release
 - `.github/workflows/release.yml` builds macOS (universal dmg, ad-hoc signed) and
   Windows (unsigned NSIS exe) via `tauri-apps/tauri-action`, publishing to the
   `v<version>` GitHub Release. Trigger is `workflow_dispatch` only (no auto build on push).
-- `pnpm release` (`scripts/release.sh`) triggers the workflow with `gh workflow run`
-  and watches it. Bump `version` in `src-tauri/tauri.conf.json` and `package.json` first.
+- `pnpm release [patch|minor|major]` (`scripts/release.sh`, default `patch`) bumps the
+  version in `src-tauri/tauri.conf.json` and `package.json`, commits `chore: release
+  vX.Y.Z`, pushes to main, then triggers the workflow with `gh workflow run` and watches
+  it. It refuses to run unless the tree is clean and `HEAD == origin/main`.
+- Auto-increment is deliberate: re-running the workflow with an already-published version
+  fails (tauri-action draft-state mismatch), so bumping every release avoids that footgun.
+- `package.json` `version` is cosmetic here (tauri-action reads the version from
+  `tauri.conf.json`), but the script keeps both in sync.
 - Note: the script is named `release`, not `publish`, because `pnpm publish` is a
   built-in pnpm command (npm registry publish) and cannot be shadowed by a script.
 

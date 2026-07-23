@@ -73,17 +73,21 @@ pnpm tauri build
 ### Release
 
 Releases are built by GitHub Actions (`.github/workflows/release.yml`) and
-uploaded to GitHub Releases. The workflow is triggered manually, not on push:
+uploaded to GitHub Releases. The workflow is triggered manually, not on push.
+`pnpm release` bumps the version, commits and pushes it, then triggers the build:
 
 ```bash
-# 1. Bump "version" in src-tauri/tauri.conf.json (and package.json)
-# 2. Commit and push to main
-# 3. Trigger the build (requires authenticated gh CLI)
-pnpm release
+# Bumps the patch version by default; pass minor / major to bump those.
+# Requires an authenticated gh CLI and a clean tree on main.
+pnpm release           # 0.1.0 -> 0.1.1
+pnpm release minor     # 0.1.0 -> 0.2.0
+pnpm release major     # 0.1.0 -> 1.0.0
 ```
 
 This builds a macOS universal dmg (ad-hoc signed, not notarized) and an
 unsigned Windows NSIS installer, then publishes them to the `v<version>` Release.
+The version is auto-incremented every release, so no manual edit of
+`tauri.conf.json` is needed.
 
 ## Usage
 
