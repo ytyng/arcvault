@@ -69,9 +69,18 @@ pnpm release
 
 ## Release
 
-- `.github/workflows/release.yml` builds macOS (universal dmg, ad-hoc signed) and
-  Windows (unsigned NSIS exe) via `tauri-apps/tauri-action`, publishing to the
-  `v<version>` GitHub Release. Trigger is `workflow_dispatch` only (no auto build on push).
+- `.github/workflows/release.yml` builds macOS (universal dmg, Developer ID signed +
+  notarized) and Windows (unsigned NSIS exe) via `tauri-apps/tauri-action`, publishing to
+  the `v<version>` GitHub Release. Trigger is `workflow_dispatch` only (no auto build on push).
+- macOS signing: a macOS-only step imports the Developer ID `.p12` (from `APPLE_CERTIFICATE`
+  / `APPLE_CERTIFICATE_PASSWORD` secrets) into a throwaway keychain; then tauri-action signs
+  and notarizes using `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` (app-specific)
+  / `APPLE_TEAM_ID`. `tauri.conf.json` keeps `signingIdentity: "-"` (ad-hoc) for local builds;
+  `APPLE_SIGNING_IDENTITY` overrides it in CI (tauri-cli precedence: env wins over config), so
+  CI produces a Developer ID build. The Apple env vars are only passed on the macOS matrix leg.
+  Missing secrets make the macOS job fail.
+- `tauri-action` is pinned to a commit SHA (not `@v0`) because it receives the Apple signing
+  secrets; a moved tag would be a supply-chain risk.
 - `pnpm release [patch|minor|major]` (`scripts/release.sh`, default `patch`) bumps the
   version in `src-tauri/tauri.conf.json` and `package.json`, commits `chore: release
   vX.Y.Z`, pushes to main, then triggers the workflow with `gh workflow run` and watches

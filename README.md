@@ -29,9 +29,8 @@ Prebuilt binaries are available on the [latest GitHub Release](https://github.co
 - **macOS**: `arcvault_x.x.x_universal.dmg` (Intel / Apple Silicon universal)
 - **Windows**: `arcvault_x.x.x_x64-setup.exe` (NSIS installer)
 
-> **Note (macOS)**: The app is ad-hoc signed and not notarized. On first launch,
-> right-click the app and choose "Open", or remove the quarantine attribute:
-> `xattr -dr com.apple.quarantine /Applications/arcvault.app`
+> **Note (macOS)**: The app is signed with a Developer ID certificate and
+> notarized by Apple, so it launches without a Gatekeeper warning.
 >
 > **Note (Windows)**: The installer is unsigned, so SmartScreen may warn you.
 > Click "More info" → "Run anyway".
@@ -84,10 +83,15 @@ pnpm release minor     # 0.1.0 -> 0.2.0
 pnpm release major     # 0.1.0 -> 1.0.0
 ```
 
-This builds a macOS universal dmg (ad-hoc signed, not notarized) and an
+This builds a macOS universal dmg (Developer ID signed and notarized) and an
 unsigned Windows NSIS installer, then publishes them to the `v<version>` Release.
 The version is auto-incremented every release, so no manual edit of
 `tauri.conf.json` is needed.
+
+macOS signing requires these repository secrets (set once via `gh secret set`):
+`APPLE_CERTIFICATE` (base64 of the Developer ID `.p12`), `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password),
+and `APPLE_TEAM_ID`.
 
 ## Usage
 
