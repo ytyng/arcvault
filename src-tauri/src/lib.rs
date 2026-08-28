@@ -108,6 +108,11 @@ fn get_zip_options() -> SimpleFileOptions {
         .compression_level(Some(6))
 }
 
+/// macOS が勝手に作るファイル・フォルダかどうか。
+fn is_macos_junk_name(name: &str) -> bool {
+    name == ".DS_Store" || name == "__MACOSX" || name.starts_with("._")
+}
+
 /// Add directory to ZIP
 fn add_directory_to_zip<W: Write + io::Seek>(
     zip: &mut zip::ZipWriter<W>,
@@ -116,15 +121,19 @@ fn add_directory_to_zip<W: Write + io::Seek>(
 ) -> io::Result<()> {
     let options = get_zip_options();
 
-    for entry in WalkDir::new(source_dir).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
+    // filter_entry で枝ごと落とす。エントリを 1 つずつ弾くだけだと、`__MACOSX`
+    // 自身はスキップされてもその中身は walk され、ZIP に入ってしまう。
+    // depth 0 (ドロップされたフォルダ自身) は名前に関わらず対象にする。
+    let walker = WalkDir::new(source_dir).into_iter().filter_entry(|e| {
+        e.depth() == 0
+            || e.file_name()
+                .to_str()
+                .map(|name| !is_macos_junk_name(name))
+                .unwrap_or(true)
+    });
 
-        // Exclude .DS_Store and __MACOSX
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == ".DS_Store" || name == "__MACOSX" || name.starts_with("._") {
-                continue;
-            }
-        }
+    for entry in walker.filter_map(|e| e.ok()) {
+        let path = entry.path();
 
         let relative_path = path.strip_prefix(source_dir)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -554,6 +563,25 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    /// テスト専用の一時ディレクトリを作る。
+    ///
+    /// 名前を固定すると、同時に走った別の cargo test や、たまたま同名の
+    /// ディレクトリを持っていたローカル環境の中身を消してしまう。
+    /// プロセス ID と連番で必ず一意にする。
+    fn temp_test_dir(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "arcvault_test_{}_{}_{}",
+            label,
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn decodes_shift_jis_filename_without_mojibake() {
         // "日本語.txt" encoded as Shift-JIS (CP932)
@@ -596,15 +624,14 @@ mod tests {
 
     #[test]
     fn unique_dir_path_keeps_name_without_extension() {
+        let dir = temp_test_dir("unique_dir");
+
         // Non-existent path is returned unchanged.
-        let base = Path::new("/tmp/arcvault-nonexistent-xyz/foo");
-        assert_eq!(get_unique_dir_path(base), base.to_path_buf());
+        let missing = dir.join("foo");
+        assert_eq!(get_unique_dir_path(&missing), missing);
 
         // For an existing folder, `_N` is appended to the whole name without
         // inventing a `.zip` extension or splitting on dots.
-        let dir = std::env::temp_dir().join("arcvault_unique_dir_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         let existing = dir.join("archive.backup");
         std::fs::create_dir_all(&existing).unwrap();
 
@@ -647,6 +674,101 @@ mod tests {
         let root = Path::new("C:\\extract");
         assert!(safe_extract_path(root, "C:\\evil.txt").is_none());
         assert!(safe_extract_path(root, "C:/evil.txt").is_none());
+    }
+
+    #[test]
+    fn unique_output_path_appends_a_counter_before_the_extension() {
+        let dir = temp_test_dir("unique_output");
+
+        // Non-existent path is returned unchanged.
+        let missing = dir.join("foo.zip");
+        assert_eq!(get_unique_output_path(&missing), missing);
+
+        let existing = dir.join("archive.zip");
+        std::fs::write(&existing, b"").unwrap();
+        assert_eq!(get_unique_output_path(&existing), dir.join("archive_1.zip"));
+
+        // Keeps counting up while the candidate is taken.
+        std::fs::write(dir.join("archive_1.zip"), b"").unwrap();
+        assert_eq!(get_unique_output_path(&existing), dir.join("archive_2.zip"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_directory_to_zip_excludes_macos_junk() {
+        // Windows で開いたときに .DS_Store や ._ ファイルが見えないことが
+        // このアプリの売りなので、除外は落とせない。
+        let dir = temp_test_dir("junk_exclusion");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir_all(dir.join("__MACOSX")).unwrap();
+        std::fs::write(dir.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(dir.join(".DS_Store"), b"junk").unwrap();
+        std::fs::write(dir.join("._keep.txt"), b"junk").unwrap();
+        std::fs::write(dir.join("sub/nested.txt"), b"nested").unwrap();
+        std::fs::write(dir.join("__MACOSX/x"), b"junk").unwrap();
+
+        let mut buffer = io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buffer);
+            add_directory_to_zip(&mut zip, &dir, "").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(buffer.into_inner())).unwrap();
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["keep.txt", "sub/", "sub/nested.txt"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_directory_to_zip_uses_forward_slashes_and_the_prefix() {
+        let dir = temp_test_dir("zip_prefix");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/nested.txt"), b"nested").unwrap();
+
+        let mut buffer = io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buffer);
+            add_directory_to_zip(&mut zip, &dir, "top").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(buffer.into_inner())).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+
+        // ZIP のエントリ名は仕様上つねに `/` 区切り (Windows でも `\` にしない)
+        assert!(names.iter().all(|n| !n.contains('\\')), "{:?}", names);
+        assert!(names.contains(&"top/sub/nested.txt".to_string()), "{:?}", names);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stored_files_are_deflated() {
+        // 無圧縮や未対応の方式にすると Windows の標準機能で開けなくなる
+        let dir = temp_test_dir("compression");
+        std::fs::write(dir.join("a.txt"), b"hello hello hello hello").unwrap();
+
+        let mut buffer = io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buffer);
+            add_directory_to_zip(&mut zip, &dir, "").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(buffer.into_inner())).unwrap();
+        let entry = archive.by_name("a.txt").unwrap();
+        assert_eq!(entry.compression(), CompressionMethod::Deflated);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(not(windows))]
