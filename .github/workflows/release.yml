@@ -1,13 +1,16 @@
 name: Release
 
-# 手動実行 (workflow_dispatch) のみ。push では自動ビルドしない。
+# リリースは手動実行 (workflow_dispatch) のみ。push では自動ビルドしない。
 # ローカルからは `pnpm release [patch|minor|major]` で起動する (scripts/release.sh)。
+# pull_request では test ジョブだけが走る (署名も公開もしない)。
 on:
   workflow_dispatch:
+  pull_request:
 
-# GitHub Release の作成とアセットアップロードに contents: write が必要。
+# 既定は読み取りのみ。GitHub Release の作成とアセットアップロードに必要な
+# contents: write は build / publish ジョブだけが持つ。
 permissions:
-  contents: write
+  contents: read
 
 # 同時に走らないよう直列化する。1 回の dispatch が 1 つの version に対応するため、
 # キャンセルされた run の version は (bump コミットは main に載ったまま) 永久に
@@ -17,13 +20,77 @@ permissions:
 #     「pending は 1 件だけ。新しく queue されたら既存の pending をキャンセルして
 #     置き換える」なので、3 回連続で dispatch すると真ん中の version が消える。
 # (queue: max と cancel-in-progress: true の併用は validation error になる)
+# PR のテストはリリースのキューに並べない (並べるとリリース待ちで滞留する)。
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.ref) || github.workflow }}
   cancel-in-progress: false
   queue: max
 
 jobs:
+  # リリースの門番。
+  # 方針: https://github.com/cyberneura/cyberneura-github-actions/blob/main/docs/build-requires-tests.md
+  #
+  # ビルドと同じ OS で走らせる。src-tauri のコードは今のところ cfg で OS を
+  # 分けていないが、依存 (tauri / zip / walkdir) の挙動は OS で変わりうるし、
+  # safe_extract_path のテストは #[cfg(windows)] で分岐している。
+  #
+  # 署名用の secrets を扱う build ジョブとは分ける (PR が持ち込んだコードを
+  # 証明書が復号されるジョブで走らせないため)。
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+
+      - name: Cache Rust (cargo + target)
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Svelte check
+        run: pnpm check
+
+      # tauri-build は tauri.conf.json の frontendDist (../build) が実在しないと、
+      # アプリのコードに到達する前に失敗する。cargo test の前にフロントを作る。
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Cargo test
+        run: cargo test
+        working-directory: src-tauri
+
   build:
+    needs: test
+    # PR ではビルドしない (署名も Release の作成も行わない)
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -175,6 +242,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
