@@ -1,33 +1,129 @@
 name: Release
 
-# リリースは手動実行 (workflow_dispatch) のみ。push では自動ビルドしない。
-# ローカルからは `pnpm release [patch|minor|major]` で起動する (scripts/release.sh)。
-# pull_request では test ジョブだけが走る (署名も公開もしない)。
+# リリースは main の src-tauri/tauri.conf.json の version で決まる。version を変えて
+# main に載せればリリースされる。公開済みの version のままなら何度 push しても何も
+# 起きない (未公開の version が載っている間は、修正の push もその version のリリースになる)。
+# ローカルからは `pnpm release [patch|minor|major]` (scripts/release.sh) で採番して
+# push する。
+#
+# 実行可否を決めるのは diff ではなく「その version がリリース済みか」。squash / rebase /
+# 直 push で diff は変わるが結果は変わらない (冪等)。path フィルターを付けないのも
+# 同じ理由で、bump が想定外の形で入っても取りこぼさないため。
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  # PR では test ジョブだけが走る (plan 以降は if で止めてある)。門番のテストを
+  # マージ前に同じ定義で回すためで、リリース経路とテストの内容がずれない。
   pull_request:
+  # version は正しいのに、その時の run が (API の一時障害等で) 失敗した場合の再実行用。
+  # 同じ判定を通るので、公開済みの version をもう一度出すことはできない。
+  workflow_dispatch:
 
-# 既定は読み取りのみ。GitHub Release の作成とアセットアップロードに必要な
-# contents: write は build / publish ジョブだけが持つ。
-permissions:
-  contents: read
+# 既定は権限なし。必要な job にだけ与える。特に test は PR が持ち込んだコードを
+# 実行するので contents: read までしか渡さない (同一リポジトリからの PR では
+# GITHUB_TOKEN が write を持ちうるため、ここを既定に任せない)。
+#
+# この workflow は pull_request でも起動するが、「PR で workflow 自体を書き換えれば
+# contents: write のジョブを動かせる」ことにはならない。public リポジトリの fork から
+# の pull_request では、permissions の記述に関わらず GITHUB_TOKEN が read-only に
+# 切り下げられ secrets も渡らない。同一リポジトリのブランチから PR を出せるのは既に
+# write 権限を持つ相手だけなので、そちらも権限の昇格にはならない。
+permissions: {}
 
-# 同時に走らないよう直列化する。1 回の dispatch が 1 つの version に対応するため、
-# キャンセルされた run の version は (bump コミットは main に載ったまま) 永久に
-# 公開されない状態になる。それを防ぐために 2 つとも要る:
+# 同時に走らないよう直列化する。1 回の push が 1 つの version に対応するため、
+# キャンセルされた run の version は (bump コミットは main に載ったまま) 公開されない
+# 状態になる。それを防ぐために 2 つとも要る:
 #   cancel-in-progress: false — 走行中の run を後発でキャンセルしない。
 #   queue: max — pending も最大 100 件まで積む。既定の `queue: single` は
 #     「pending は 1 件だけ。新しく queue されたら既存の pending をキャンセルして
-#     置き換える」なので、3 回連続で dispatch すると真ん中の version が消える。
+#     置き換える」なので、3 回連続で push すると真ん中の version が消える。
 # (queue: max と cancel-in-progress: true の併用は validation error になる)
-# PR のテストはリリースのキューに並べない (並べるとリリース待ちで滞留する)。
+#
+# PR の検査 run は「1 push = 1 version」の直列化とは無関係なので、リリース用の
+# グループへ入れない。同じグループにすると PR が 1 本走るだけでリリースが pending に
+# 積まれる (cancel-in-progress: false なので待たされ続ける)。さらに commit ごとに
+# 別グループにして、PR 側では直列化そのものを効かせない — ここで PR をまとめると
+# 同じ PR へ連続 push した時に古い commit の検査が順番待ちを作り、最新 commit の
+# 結果が最も遅れる (この設定では cancel-in-progress を PR だけ true にはできない)。
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.ref) || github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('{0}-{1}', github.ref, github.sha) || 'release' }}
   cancel-in-progress: false
   queue: max
 
 jobs:
-  # リリースの門番。
+  # ビルドに 30 分以上かける前に、その version がまだリリースされていないことだけを
+  # 確かめる。ここが false を返す限り、push のたびに macOS / Windows ランナーが動く
+  # ことはない。
+  # PR ではリリース判定そのものが無意味なので走らせない。この job が skipped に
+  # なると、依存している build / publish も (always() を使っていないので) skipped に
+  # なる — PR では test だけが動く。
+  plan:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      # dispatch は自分の ref を指定できる。未公開 version を載せたブランチが、
+      # そのブランチの内容でリリースされてしまわないようにする (push では main 以外
+      # 起こり得ないが、dispatch では起こる)。
+      - name: Refuse to release from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::releases come from main, and this run is on ${REF}"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ -z "$VERSION" ]; then
+            echo "::error::could not read the version out of src-tauri/tauri.conf.json"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether this version still needs releasing
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # このエンドポイントが答えるのは公開済みの Release だけ (draft にはまだ tag が
+          # 無いので見つからない)。それがここで訊きたいことでもある: 失敗した run が
+          # 残した draft は、同じ version で再実行して埋め直す。
+          #
+          # 404 だけを「未リリース」と読む。rate limit や障害をそう読むと、公開済みの
+          # version をもう一度ビルドして publish ジョブが二重に公開しにいく。
+          status=$(gh api "repos/${GH_REPO}/releases/tags/v${VERSION}" \
+            --silent --include 2>/dev/null | head -n 1 | awk '{print $2}' || true)
+          case "$status" in
+            404)
+              echo "release=true" >> "$GITHUB_OUTPUT"
+              echo "Releasing v${VERSION}"
+              ;;
+            200)
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              echo "v${VERSION} is already released; nothing to do."
+              ;;
+            *)
+              echo "::error::could not tell whether v${VERSION} exists (HTTP ${status:-none}). Not guessing."
+              exit 1
+              ;;
+          esac
+
+  # リリースビルドの門番。
   # 方針: https://github.com/cyberneura/cyberneura-github-actions/blob/main/docs/build-requires-tests.md
   #
   # ビルドと同じ OS で走らせる。src-tauri のコードは今のところ cfg で OS を
@@ -37,12 +133,26 @@ jobs:
   # 署名用の secrets を扱う build ジョブとは分ける (PR が持ち込んだコードを
   # 証明書が復号されるジョブで走らせないため)。
   test:
+    # push / dispatch では、実際にリリースする version の時だけ走らせる。plan を
+    # 通さず無条件に走らせると、リリースを伴わない main への push のたびに
+    # macOS / Windows ランナーが動く — plan を置いた目的そのものが無くなる。
+    # PR では plan が skipped になり、既定ではこの job も道連れで skipped になる
+    # ので、!cancelled() で自動スキップを外してからイベント名で判定する
+    # (plan が失敗した時は needs.plan.result で止まる)。
+    needs: plan
+    if: >-
+      ${{ !cancelled()
+          && (github.event_name == 'pull_request'
+              || (needs.plan.result == 'success'
+                  && needs.plan.outputs.release == 'true')) }}
     strategy:
       fail-fast: false
       matrix:
         platform: [macos-latest, windows-latest]
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -60,6 +170,7 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # ビルド用ではないので universal 用の 2 アーキは要らない。ホストターゲットでテストする。
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
@@ -86,9 +197,10 @@ jobs:
         working-directory: src-tauri
 
   build:
-    needs: test
-    # PR ではビルドしない (署名も Release の作成も行わない)
-    if: github.event_name == 'workflow_dispatch'
+    # test を通らずにビルドしない。needs は同じ run の job にしか効かないので、
+    # テストを別 workflow に切り出さないこと。
+    needs: [plan, test]
+    if: needs.plan.outputs.release == 'true'
     permissions:
       contents: write
     strategy:
@@ -214,9 +326,8 @@ jobs:
       # tauri.conf.json の version から v<version> タグの Release を作成し、
       # ビルド成果物をアップロードする。並列 matrix の片方だけで公開状態に
       # ならないよう draft で作成し、全プラットフォーム成功後に publish ジョブで公開する。
-      # 注意: 公開済みバージョンと同じ version で再実行すると、tauri-action が
-      # draft 状態の不一致でエラーになる。必ず version を上げてから実行すること
-      # (scripts/release.sh が採番するので、通常は `pnpm release` から起動する)。
+      # 失敗した run が残した draft は、同じ version の再実行で tauri-action が
+      # そのまま使う (draft の tag_name で引き当てる)。
       # macOS の APPLE_* を渡すと tauri-action が Developer ID 署名 + 公証 + staple を
       # 自動で行う。Apple 認証情報を受け取るため、可変タグ @v0 ではなく commit SHA に
       # 固定する (タグが差し替えられて secrets を抜かれるサプライチェーン攻撃を防ぐ)。
@@ -230,6 +341,10 @@ jobs:
           APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
+          # tauri CLI を直接叩き、package.json の "tauri" スクリプトを迂回する。
+          # スクリプト側に `APPLE_SIGNING_IDENTITY='...' tauri` のようなインライン
+          # 代入が入ると workflow から渡した env を上書きしてしまうため。
+          tauriScript: pnpm exec tauri
           tagName: v__VERSION__
           releaseName: ArcVault v__VERSION__
           releaseDraft: true
@@ -239,20 +354,17 @@ jobs:
   # 全プラットフォームのビルド・アップロードが成功した時のみ draft を公開する。
   # どれかが失敗した場合は draft のまま残る (不完全な Release は公開されない)。
   publish:
-    needs: build
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           gh release edit "v${VERSION}" --draft=false --latest
