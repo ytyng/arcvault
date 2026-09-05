@@ -24,6 +24,14 @@ A macOS desktop application for creating Windows-compatible ZIP files.
 
 ## Download
 
+### Homebrew (macOS)
+
+```bash
+brew install --cask ytyng/tap/arcvault
+```
+
+### Manual download
+
 Prebuilt binaries are available on the [latest GitHub Release](https://github.com/ytyng/arcvault/releases/latest):
 
 - **macOS**: `arcvault_x.x.x_universal.dmg` (Intel / Apple Silicon universal)
@@ -71,9 +79,11 @@ pnpm tauri build
 
 ### Release
 
-Releases are built by GitHub Actions (`.github/workflows/release.yml`) and
-uploaded to GitHub Releases. The workflow is triggered manually, not on push.
-`pnpm release` bumps the version, commits and pushes it, then triggers the build:
+Releases follow the version in `src-tauri/tauri.conf.json` on `main`. Every push
+to `main` runs `.github/workflows/release.yml`, which checks whether `v<version>`
+is already a published GitHub Release; if not, it builds and publishes one.
+A push whose version is already released does nothing. `pnpm release` bumps the
+version, commits and pushes it, then watches the run:
 
 ```bash
 # Bumps the patch version by default; pass minor / major to bump those.
@@ -85,8 +95,12 @@ pnpm release major     # 0.1.0 -> 1.0.0
 
 This builds a macOS universal dmg (Developer ID signed and notarized) and an
 unsigned Windows NSIS installer, then publishes them to the `v<version>` Release.
-The version is auto-incremented every release, so no manual edit of
-`tauri.conf.json` is needed.
+If a run fails, fix the cause and push: the version is still unreleased, so the
+next push picks it up. No re-bump is needed.
+
+The Homebrew cask in [ytyng/homebrew-tap](https://github.com/ytyng/homebrew-tap)
+follows the latest release on its own (an hourly workflow in the tap), so a new
+version reaches `brew install --cask ytyng/tap/arcvault` on the tap's next successful run.
 
 macOS signing requires these repository secrets (set once via `gh secret set`):
 `APPLE_CERTIFICATE` (base64 of the Developer ID `.p12`), `APPLE_CERTIFICATE_PASSWORD`,

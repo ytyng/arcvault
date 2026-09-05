@@ -63,15 +63,27 @@ pnpm tauri build
 # Icon generation
 pnpm tauri icon /path/to/icon.png
 
-# Release build (triggers GitHub Actions, uploads to GitHub Releases)
+# Release: bump the version and push it; the push triggers the GitHub Actions build
 pnpm release
 ```
 
 ## Release
 
-- `.github/workflows/release.yml` builds macOS (universal dmg, Developer ID signed +
-  notarized) and Windows (unsigned NSIS exe) via `tauri-apps/tauri-action`, publishing to
-  the `v<version>` GitHub Release. Trigger is `workflow_dispatch` only (no auto build on push).
+- `.github/workflows/release.yml` runs on every push to `main` (and on `workflow_dispatch`
+  as a retry). A `plan` job reads `src-tauri/tauri.conf.json` and asks the GitHub API whether
+  `v<version>` is already a published Release: 404 means release, 200 means nothing to do,
+  anything else fails the run rather than guessing. Only then do `test`, `build` and `publish`
+  run. The decision is "is this version released", not "did the diff touch the version", so
+  squash / rebase / direct push all behave the same, and a failed release is retried by
+  pushing the fix (no path filter for the same reason).
+- `build` makes macOS (universal dmg, Developer ID signed + notarized) and Windows (unsigned
+  NSIS exe) via `tauri-apps/tauri-action` into a draft Release; `publish` flips the draft to
+  published only after both legs succeed. A draft left by a failed run is reused by the
+  re-run of the same version.
+- `pull_request` runs only the `test` job (`plan` is skipped, so `build` / `publish` are
+  skipped with it). The PR concurrency group is per commit so PR checks never queue behind
+  a release; releases serialise in one group with `queue: max` so a burst of pushes cannot
+  drop a version.
 - macOS signing: a macOS-only step imports the Developer ID `.p12` (from `APPLE_CERTIFICATE`
   / `APPLE_CERTIFICATE_PASSWORD` secrets) into a throwaway keychain; then tauri-action signs
   and notarizes using `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` (app-specific)
@@ -83,14 +95,16 @@ pnpm release
   secrets; a moved tag would be a supply-chain risk.
 - `pnpm release [patch|minor|major]` (`scripts/release.sh`, default `patch`) bumps the
   version in `src-tauri/tauri.conf.json` and `package.json`, commits `chore: release
-  vX.Y.Z`, pushes to main, then triggers the workflow with `gh workflow run` and watches
-  it. It refuses to run unless the tree is clean and `HEAD == origin/main`.
-- Auto-increment is deliberate: re-running the workflow with an already-published version
-  fails (tauri-action draft-state mismatch), so bumping every release avoids that footgun.
+  vX.Y.Z`, pushes to main, then finds the run started by that push (by head SHA) and
+  watches it. It refuses to run unless the tree is clean and `HEAD == origin/main`. The
+  push is what releases; editing the version by hand and pushing does the same thing.
 - `package.json` `version` is cosmetic here (tauri-action reads the version from
   `tauri.conf.json`), but the script keeps both in sync.
 - Note: the script is named `release`, not `publish`, because `pnpm publish` is a
   built-in pnpm command (npm registry publish) and cannot be shadowed by a script.
+- Homebrew: the cask lives in `ytyng/homebrew-tap` (`brew install --cask ytyng/tap/arcvault`).
+  The tap updates itself hourly from the latest published Release, so nothing here pushes
+  to it and no tap token is needed in this repository.
 
 ## Svelte 5 Runes
 
