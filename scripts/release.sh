@@ -113,9 +113,10 @@ fi
 echo "Waiting for the release build of v${VERSION} ..."
 
 # push で始まった run は API に出てくるまで少し遅れるので、ポーリングして拾う。
-# 「最新の run」ではなく「今 push した bump コミットを head に持つ run」を探す:
-# 待っている間に別の push が挟まっても、他人の run を watch してしまわない。
-# version は毎回インクリメントされるので、この SHA を持つ run は今回の 1 つだけ。
+# 「最新の run」ではなく「今 push した bump コミットを head に持つ run」を --commit で
+# サーバー側から絞って探す: 待っている間に別の push が挟まっても、他人の run を watch
+# してしまわないし、直近 N 件を取って手元で選ぶ形と違って、連続 push でキューが
+# 積み上がっていても取りこぼさない。この SHA を持つ run は今回の 1 つだけ。
 RELEASE_SHA=$(git rev-parse HEAD)
 
 # `|| true` が無いと、GitHub API の一時エラーで set -e がリトライループごと殺す
@@ -125,10 +126,8 @@ RELEASE_SHA=$(git rev-parse HEAD)
 RUN_ID=""
 for _ in $(seq 1 60); do
   sleep 2
-  RUN_ID=$(gh run list --workflow=release.yml --branch main --limit 20 \
-    --json databaseId,headSha \
-    --jq "[.[] | select(.headSha == \"${RELEASE_SHA}\")] | .[0].databaseId // \"\"" \
-    2>/dev/null || true)
+  RUN_ID=$(gh run list --workflow=release.yml --branch main --commit "${RELEASE_SHA}" \
+    --limit 1 --json databaseId --jq '.[0].databaseId // ""' 2>/dev/null || true)
   if [ -n "${RUN_ID}" ]; then
     break
   fi
