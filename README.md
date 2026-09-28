@@ -121,4 +121,18 @@ and `APPLE_TEAM_ID`.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+## Third-party licenses
+
+[`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt) lists the licenses of the libraries
+bundled into the app: every Rust crate compiled into the macOS and Windows binaries, and
+the npm packages bundled into the web view. It is compiled into the app and shown by
+"Third-Party Licenses" in the menu (macOS: the app menu, right below "About arcvault";
+Windows: the Help menu). Regenerate it after adding or updating a dependency; the Rust
+tests fail if it is out of date.
+
+```bash
+cargo install cargo-about --locked --features cli   # once
+pnpm notices
+```
