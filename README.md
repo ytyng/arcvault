@@ -93,7 +93,7 @@ pnpm release minor     # 0.1.0 -> 0.2.0
 pnpm release major     # 0.1.0 -> 1.0.0
 ```
 
-This builds a macOS universal dmg (Developer ID signed and notarized) and an
+This builds a macOS universal dmg (Developer ID signed; both the app and the dmg are notarized) and an
 unsigned Windows NSIS installer, then publishes them to the `v<version>` Release.
 If a run fails, fix the cause and push: the version is still unreleased, so the
 next push picks it up. No re-bump is needed.

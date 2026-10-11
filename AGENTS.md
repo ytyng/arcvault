@@ -79,7 +79,9 @@ pnpm release
   squash / rebase / direct push all behave the same, and a failed release is retried by
   pushing the fix (no path filter for the same reason).
 - `build` makes macOS (universal dmg, Developer ID signed + notarized) and Windows (unsigned
-  NSIS exe) via `tauri-apps/tauri-action` into a draft Release; `publish` flips the draft to
+  NSIS exe) via `tauri-apps/tauri-action` into a draft Release. tauri-action notarizes only the
+  `.app`, so the macOS leg then notarizes and staples the dmg with `notarytool` / `stapler` and
+  swaps it for the unnotarized one in the draft (by the `releaseId` tauri-action reports); `publish` flips the draft to
   published only after both legs succeed. A draft left by a failed run is reused by the
   re-run of the same version.
 - `pull_request` runs only the `test` job (`plan` is skipped, so `build` / `publish` are
@@ -88,7 +90,7 @@ pnpm release
   drop a version.
 - macOS signing: a macOS-only step imports the Developer ID `.p12` (from `APPLE_CERTIFICATE`
   / `APPLE_CERTIFICATE_PASSWORD` secrets) into a throwaway keychain; then tauri-action signs
-  and notarizes using `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` (app-specific)
+  and notarizes the `.app` (and the follow-up step notarizes the dmg) using `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` (app-specific)
   / `APPLE_TEAM_ID`. `tauri.conf.json` keeps `signingIdentity: "-"` (ad-hoc) for local builds;
   `APPLE_SIGNING_IDENTITY` overrides it in CI (tauri-cli precedence: env wins over config), so
   CI produces a Developer ID build. The Apple env vars are only passed on the macOS matrix leg.
