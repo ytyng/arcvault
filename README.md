@@ -34,8 +34,8 @@ brew install --cask ytyng/tap/arcvault
 
 Prebuilt binaries are available on the [latest GitHub Release](https://github.com/ytyng/arcvault/releases/latest):
 
-- **macOS**: `arcvault_x.x.x_universal.dmg` (Intel / Apple Silicon universal)
-- **Windows**: `arcvault_x.x.x_x64-setup.exe` (NSIS installer)
+- **macOS**: `Arcvault_x.x.x_universal.dmg` (Intel / Apple Silicon universal)
+- **Windows**: `Arcvault_x.x.x_x64-setup.exe` (NSIS installer)
 
 > **Note (macOS)**: The app is signed with a Developer ID certificate and
 > notarized by Apple, so it launches without a Gatekeeper warning.
@@ -128,7 +128,7 @@ MIT. See [LICENSE](LICENSE).
 [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt) lists the licenses of the libraries
 bundled into the app: every Rust crate compiled into the macOS and Windows binaries, and
 the npm packages bundled into the web view. It is compiled into the app and shown by
-"Third-Party Licenses" in the menu (macOS: the app menu, right below "About arcvault";
+"Third-Party Licenses" in the menu (macOS: the app menu, right below "About Arcvault";
 Windows: the Help menu). Regenerate it after adding or updating a dependency; the Rust
 tests fail if it is out of date.
 

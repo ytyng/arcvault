@@ -575,7 +575,7 @@ fn show_licenses_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 /// The app menu. On macOS it is Tauri's default menu with "Third-Party Licenses" placed
-/// right below "About arcvault" in the app menu. Windows had no menu bar before, so it
+/// right below "About Arcvault" in the app menu. Windows had no menu bar before, so it
 /// gets only a Help menu holding About and Third-Party Licenses.
 fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let licenses = MenuItem::with_id(app, LICENSES_ID, "Third-Party Licenses", true, None::<&str>)?;

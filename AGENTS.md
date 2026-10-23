@@ -116,7 +116,7 @@ pnpm release
   `scripts/generate-third-party-notices.sh` (`pnpm notices`) and committed. `lib.rs` embeds it
   with `include_str!`, and the "Third-Party Licenses" menu item opens the `licenses` window
   (`src/routes/licenses/`, capability `src-tauri/capabilities/licenses.json`). On macOS the
-  item sits right below "About arcvault" in the app menu (Tauri's default menu with one item
+  item sits right below "About Arcvault" in the app menu (Tauri's default menu with one item
   inserted); on Windows the app has only a Help menu (About + Third-Party Licenses).
 - **When you add or update a dependency, run `pnpm notices` again and commit the result.**
   `cargo test` fails if a direct dependency is missing from the file or its version does not
